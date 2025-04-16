@@ -1,0 +1,70 @@
+# Telegram Bot for Football Session Management
+
+Build a Telegram bot using Python (Telebot library) and MySQL to manage football field rental sessions. Below are the detailed requirements:
+
+## Session Details
+- Sessions run daily from 3:00 PM to 10:30 PM.
+- Each session has a fixed duration of 1.5 hours (e.g., 3:00–4:30 PM, 4:30–6:00 PM, etc.).
+- Session slots are predefined and consistent every day.
+
+## User Types and Pricing
+- Three user types with different session costs:
+  - University employees
+  - University students
+  - Others
+- Costs for each user type will be stored in the MySQL database (assume placeholder values for now, e.g., $10, $8, $12 respectively, unless specified later).
+
+## User Onboarding
+- When a new user starts the bot:
+  - Prompt them to select their user type (employee, student, other).
+  - Collect their name and surname via text input.
+  - Automatically retrieve their phone number from their Telegram account (if available, otherwise prompt for it).
+- Store user details (name, surname, phone number, user type, Telegram ID) in the MySQL database.
+
+## Session Viewing
+- Users can view available sessions for:
+  - Today
+  - Tomorrow
+  - Day after tomorrow
+- Display sessions with:
+  - Day name and date (e.g., "Monday, 2025-04-15").
+  - Time slot (e.g., "3:00 PM–4:30 PM").
+  - Availability status (free or booked).
+- Show only free sessions unless the user is an admin.
+
+## Booking and Payment
+- Users can select a free session to book.
+- After selecting a session:
+  - Display the cost based on their user type.
+  - Simulate a payment process (e.g., confirm payment with a button for now; no real payment integration required unless specified).
+- Once "paid," mark the session as booked in the database, linking it to the user’s Telegram ID.
+
+## Admin Features
+- Admin user (identified by a specific Telegram ID, e.g., hardcoded for now):
+  - Can disable a session (mark it as unavailable).
+  - Can modify session details (e.g., time, availability).
+  - Can view all users (name, surname, phone number, user type).
+  - Can see which user booked which session.
+  - Can generate a report in Excel format containing:
+    - All payments (user, session, date, time, cost).
+    - User details (name, surname, phone number, user type).
+- Admin commands should be accessible via a custom menu or specific commands (e.g., `/admin`).
+
+## Technical Requirements
+- Use Python with the `pyTelegramBotAPI` (Telebot) library for bot development.
+- Use MySQL for data storage with tables for:
+  - Users (Telegram ID, name, surname, phone number, user type).
+  - Sessions (date, time slot, availability, booked user ID, cost).
+  - Payments (user ID, session ID, date, time, amount).
+- Ensure the bot handles concurrent users safely (e.g., avoid double-booking).
+- Use `pandas` and `openpyxl` for generating Excel reports.
+- Structure the code modularly (e.g., separate files for bot logic, database handling, and admin functions).
+- Include basic error handling (e.g., invalid inputs, database errors).
+
+## Notes
+- Assume the bot runs on a server with MySQL already set up (provide SQL schema if needed).
+- No external APIs (e.g., payment gateways) are required unless specified.
+- If phone number retrieval from Telegram isn’t possible, prompt the user to input it manually.
+- Admin Telegram ID can be hardcoded for simplicity (e.g., set one ID as admin).
+
+If you need clarification on any point (e.g., specific costs, payment flow, or MySQL setup), let me know before proceeding.
