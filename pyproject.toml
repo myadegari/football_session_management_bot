@@ -18,7 +18,9 @@ dependencies = [
     "toml (>=0.10.2,<0.11.0)",
     "pymysql (>=1.1.1,<2.0.0)",
     "pandas (>=2.2.3,<3.0.0)",
-    "cryptography (>=44.0.2,<45.0.0)"
+    "cryptography (>=44.0.2,<45.0.0)",
+    "pdfkit (>=1.0.0,<2.0.0)",
+    "openpyxl (>=3.1.5,<4.0.0)"
 ]
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]

@@ -6,6 +6,7 @@ from io import BytesIO
 
 import pandas as pd
 import telebot
+import re
 from dotenv import load_dotenv
 from sqlalchemy.orm import Session
 from telebot.types import (
@@ -18,14 +19,44 @@ from telebot.types import (
 from constant import general, user
 from repositories import models
 from repositories.database import engine
-from repositories.models import User, UserRole, UserType,VerificationStatus
+from repositories.models import User, UserRole, UserType, VerificationStatus
 from repositories.utils import get_db
 from utils.dependency import Dependency, inject
 from utils.jalali import Gregorian
 
 
+def convert_persian_numbers(input_text):
+    persian_to_english = {
+        "۰": "0",
+        "۱": "1",
+        "۲": "2",
+        "۳": "3",
+        "۴": "4",
+        "۵": "5",
+        "۶": "6",
+        "۷": "7",
+        "۸": "8",
+        "۹": "9",
+        "٠": "0",
+        "١": "1",
+        "٢": "2",
+        "٣": "3",
+        "٤": "4",
+        "٥": "5",
+        "٦": "6",
+        "٧": "7",
+        "٨": "8",
+        "٩": "9",
+    }
+
+    cleaned = input_text
+    for persian, english in persian_to_english.items():
+        cleaned = cleaned.replace(persian, english)
+    return cleaned
+
+
 @inject
-def setup_payment_categories(db: Session=Dependency(get_db)):
+def setup_payment_categories(db: Session = Dependency(get_db)):
     # Check if categories already exist
     existing_categories = db.query(models.PaymentCategory).all()
     if existing_categories:
@@ -37,11 +68,10 @@ def setup_payment_categories(db: Session=Dependency(get_db)):
         UserType.GENERAL: 12,
     }
     for account_type, cost in categories.items():
-        category = models.PaymentCategory(
-            account_type=account_type, session_cost=cost
-        )
+        category = models.PaymentCategory(account_type=account_type, session_cost=cost)
         db.add(category)
     db.commit()
+
 
 # Define time slots for the sessions
 
@@ -55,6 +85,13 @@ PERSIAN_DAY_NAMES = {
     "Saturday": "شنبه",
     "Sunday": "یکشنبه",
 }
+TIMESLOTS = [
+    "15:00-16:30",
+    "16:30-18:00",
+    "18:00-19:30",
+    "19:30-21:00",
+    "21:00-22:30",
+]
 models.Base.metadata.create_all(bind=engine)
 setup_payment_categories()
 
@@ -67,10 +104,7 @@ if not bot_token:
 
 bot = telebot.TeleBot(bot_token)
 
-
-user_onboarding_state = {}
-
-
+user_boarding={}
 @bot.message_handler(commands=["start"])
 @inject
 def start_handler(message: telebot.types.Message, db: Session = Dependency(get_db)):
@@ -80,20 +114,22 @@ def start_handler(message: telebot.types.Message, db: Session = Dependency(get_d
         if user_db.role == models.UserRole.ADMIN:
             markup = InlineKeyboardMarkup()
             markup.add(
-                InlineKeyboardButton("View Users", callback_data="admin_view_users"),
-                InlineKeyboardButton("View Sessions", callback_data="admin_view_sessions"),
-            )
-            markup.add(
+                InlineKeyboardButton("View Users", callback_data="ADMIN_VIEW_USERS"),
                 InlineKeyboardButton(
-                    "Disable/Enable Session", callback_data="admin_toggle_session"
-                ),
-                InlineKeyboardButton(
-                    "Generate Excel Report", callback_data="admin_generate_report"
+                    "View Sessions", callback_data="ADMIN_VIEW_SESSIONS"
                 ),
             )
             markup.add(
                 InlineKeyboardButton(
-                    "Generate Monthly Sessions", callback_data="admin_generate_sessions"
+                    "Disable/Enable Session", callback_data="ADMIN_TOGGLE_SESSION"
+                ),
+                InlineKeyboardButton(
+                    "Generate Excel Report", callback_data="ADMIN_GENERATE_REPORT"
+                ),
+            )
+            markup.add(
+                InlineKeyboardButton(
+                    "Generate Monthly Sessions", callback_data="ADMIN_GENERATE_SESSIONS"
                 )
             )
             bot.send_message(message.chat.id, "Admin Panel:", reply_markup=markup)
@@ -115,8 +151,6 @@ def start_handler(message: telebot.types.Message, db: Session = Dependency(get_d
                 reply_markup=keyboard,
             )
         return
-    user_onboarding_state[user_id] = {}
-    user_onboarding_state[user_id]['first_message']= message.message_id
     markup = InlineKeyboardMarkup()
     keys = (
         InlineKeyboardButton(
@@ -132,6 +166,9 @@ def start_handler(message: telebot.types.Message, db: Session = Dependency(get_d
             callback_data=user.Buttons.GENERAL["CALLBACK_DATA"],
         ),
     )
+    user_boarding[user_id] = {
+        "first_message": message.message_id,
+    }
     for key in keys:
         markup.row(key)
     bot.send_message(
@@ -144,114 +181,454 @@ def start_handler(message: telebot.types.Message, db: Session = Dependency(get_d
 def callback_cneter(call, db: Session = Dependency(get_db)):
     if call.data.startswith("ACCOUNT_TYPE"):
         user_id = call.from_user.id
-        if user_id not in user_onboarding_state:
-            return
         user_type = call.data.replace("ACCOUNT_TYPE_", "")
-        user_onboarding_state[user_id]["account_type"] = user_type
+        db_user = User(
+            user_id=user_id,
+            account_type=UserType[user_type],
+        )
+
         match user_type:
             case "EMPLOYEE":
                 msg = bot.reply_to(call.message, user.Messages.ENTER_PERSONNEL_NUMBER)
-                bot.register_next_step_handler(msg, handle_veryfication_token)
+                bot.register_next_step_handler(msg, handle_veryfication_token, db_user)
             case "STUDENT":
                 msg = bot.reply_to(call.message, user.Messages.ENTER_STUDENT_NUMBER)
-                bot.register_next_step_handler(msg, handle_veryfication_token)
+                bot.register_next_step_handler(msg, handle_veryfication_token, db_user)
             case "GENERAL":
-                user_onboarding_state[user_id]["veryfication_token"] = None
+                db_user.veryfication_token = None
+                # user_onboarding_state[user_id]["veryfication_token"] = None
                 msg = bot.reply_to(call.message, user.Messages.ENTER_YOUR_NAME)
-                bot.register_next_step_handler(msg, handle_name)
+                bot.register_next_step_handler(msg, handle_name, db_user)
             case _:
                 raise ValueError("Invalid account type selected")
 
-    # if call.data == "ADMIN_VIEW_USERS":
-    #     users = db.query(User).all()
-    #     msg = "*کاربران:*\n"
-    #     for u in users:
-    #         msg += f"{u.name} {u.surname} | {u.phone_number} | {u.user_type.value}\n"
-    #     bot.send_message(call.message.chat.id, msg or "No users found.")
+    if call.data.startswith("SESSION_DATE_"):
+        date_str = call.data.split("_")[2]
+        date = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
+        sessions = (
+            db.query(models.Session)
+            .filter(models.Session.session_date == date)
+            .all()
+        )
+        jalali_date = Gregorian(date).persian_string()
+        msg = f"*سانس های زمین برای {jalali_date}*\n"
+        keyboard = InlineKeyboardMarkup()
+        for s in sessions:
+            if s.available:
+                btn_text = f"{s.time_slot} — رزرو کن"
+                keyboard.add(
+                    InlineKeyboardButton(btn_text, callback_data=f"BOOK_{s.id}")
+                )
+        bot.edit_message_text(msg,chat_id=call.message.chat.id,
+            message_id=call.message.message_id, reply_markup=keyboard)
+    if call.data.startswith("BOOK_"):
+        session_id = int(call.data.split("_")[1])
+        session = db.query(models.Session).filter_by(id=session_id).first()
+        if not session:
+            bot.answer_callback_query(
+                call.id, "This session is no longer available.", show_alert=True
+            )
+            return
+        # Show cost and ask for confirmation
+        user = db.query(User).filter_by(user_id=call.from_user.id).first()
+        if user.is_verified == VerificationStatus.VERIFIED:
+            cost = int(db.query(models.PaymentCategory).filter_by(account_type =user.account_type).first().session_cost)
+        else:
+            cost = int(session.cost)
+        markup = InlineKeyboardMarkup()
+        markup.add(
+            InlineKeyboardButton(
+                f"Confirm Booking (${cost})", callback_data=f"CONFIRM_{session_id}"
+            )
+        )
+        bot.edit_message_text(
+            f"Session: {Gregorian(session.session_date).persian_string()} {session.time_slot}\nCost: ${cost}\nDo you want to book this session?",
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            reply_markup=markup,
+        )
+        # bot.answer_callback_query(call.id)
+    if call.data.startswith("CONFIRM_"):
+        session_id = int(call.data.split("_")[1])
+        session = db.query(models.Session).filter_by(id=session_id).first()
+        if not session:
+            bot.answer_callback_query(
+                call.id, "This session is no longer available.", show_alert=True
+            )
+            return
+        user = db.query(User).filter_by(user_id=call.from_user.id).first()
+        if user.is_verified == VerificationStatus.VERIFIED:
+            cost = int(db.query(models.PaymentCategory).filter_by(account_type =user.account_type).first().session_cost)
+        else:
+            cost = int(session.cost)
+        # Create payment record
+        payment = models.Payment(
+            user_id=call.from_user.id,
+            session_id=session_id,
+            amount=cost,
+            payment_date=datetime.datetime.now(),
+        )
+        db.add(payment)
+        session.available = False
+        session.booked_user_id = call.from_user.id
+        db.commit()
+        bot.edit_message_text(
+            f"✅ Session booked successfully!\nSession: {Gregorian(session.session_date).persian_string()} {session.time_slot}",
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+        )
+        # bot.answer_callback_query(call.id, "Session booked!")
 
-    # if call.data == "ADMIN_VIEW_SESSIONS":
-    #     sessions = db.query(models.Session).all()
-    #     msg = "*سانس های زمین*\n"
-    #     for s in sessions:
-    #         booked = f"رزور شده {s.booked_user_id}" if s.booked_user_id else "آزاد"
-    #         msg += f"{s.session_date} {s.time_slot} — {booked}\n"
-    #     bot.send_message(
-    #         call.message.chat.id, msg or "سانس های زمین پیدا نشد."
-    #     )
-    # if call.data == "ADMIN_TOGGLE_SESSION":
-    #     bot.send_message(
-    #         call.message.chat.id,
-    #         "Send the session ID to toggle availability (enable/disable):",
-    #     )
+    if call.data == "ADMIN_VIEW_USERS":
+        users = db.query(User).all()
+        msg = "*کاربران:*\n"
+        for u in users:
+            msg += f"{u.name} {u.surname} | {u.phone_number} | {u.account_type.value} | {u.is_verified.value}\n"
+        bot.send_message(call.message.chat.id, msg or "No users found.")
 
-def handle_veryfication_token(message):
-    user_id = message.from_user.id
-    user_onboarding_state[user_id]["veryfication_token"] = message.text.strip()
-    msg = bot.reply_to(message, user.Messages.ENTER_YOUR_NAME)
-    bot.register_next_step_handler(msg, handle_name)
+    if call.data == "ADMIN_VIEW_SESSIONS":
+        today = datetime.date.today()
+        dates = [today + datetime.timedelta(days=i) for i in range(4)]
+        sessions = (
+            db.query(models.Session).filter(models.Session.session_date.in_(dates)).all()
+        )
+        sessions_by_date = {}
+        for s in sessions:
+            date_key = s.session_date
+            if date_key not in sessions_by_date:
+                sessions_by_date[date_key] = []
+            sessions_by_date[date_key].append(s)
+        
+        msg = "*سانس های زمین*\n"
+        # Iterate through dates in order
+        for date in sorted(sessions_by_date.keys()):
+            # Get day name in Persian
+            day_name_en = day_name[date.weekday()]
+            day_name_fa = PERSIAN_DAY_NAMES.get(day_name_en, day_name_en)
+            
+            # Add day header
+            msg += f"\n📅 {day_name_fa}:\n"
+            
+            # Add sessions for this day
+            for s in sorted(sessions_by_date[date], key=lambda x: x.time_slot):
+                status = f"رزور شده {s.booked_user_id}" if s.booked_user_id else "آزاد"
+                msg += (
+                        f"[{s.time_slot}] :: {status} :: SID_{s.id}\n"
+                        )
+        bot.send_message(
+            call.message.chat.id, msg or "سانس های زمین پیدا نشد."
+        )
+    if call.data == "ADMIN_TOGGLE_SESSION":
+        bot.send_message(
+            call.message.chat.id,
+            "Send the session ID to toggle availability (enable/disable):",
+        )
+    if call.data == "ADMIN_GENERATE_SESSIONS":
+        generating_msg = bot.send_message(
+            call.message.chat.id,
+            "Generating sessions for the next 30 days...",
+        )
+        # Call the function to generate sessions
+        # Get the first day of next month
+        today = datetime.date.today()
+        # Generate sessions for the entire month
+        sessions_created = 0
+        current_date = today+datetime.timedelta(days=1)
+        end_date = today+datetime.timedelta(days=30)
+        general = db.query(models.PaymentCategory).filter_by(
+            account_type=UserType.GENERAL).first()
+        base_cost = general.session_cost
 
-def handle_name(message):
-    user_id = message.from_user.id
-    user_onboarding_state[user_id]["name"] = message.text.strip()
-    msg = bot.reply_to(message, user.Messages.ENTER_YOUR_SURNAME)
-    bot.register_next_step_handler(msg, handle_surname)
+        existing_sessions = db.query(models.Session).filter(
+            models.Session.session_date >= current_date,
+            models.Session.session_date <= end_date
+        ).all()
+        
+        # Create a set of (date, time_slot) tuples for quick lookup
+        existing_session_keys = {
+            (session.session_date, session.time_slot) 
+            for session in existing_sessions
+        }
+        
+        while current_date <= end_date:
+            # Generate sessions per day
+            for time_slot in TIMESLOTS:
+                # Check if this session already exists
+                if (current_date, time_slot) not in existing_session_keys:
+                    session = models.Session(
+                        session_date=current_date,
+                        time_slot=time_slot,
+                        available=True,
+                        cost=base_cost,
+                    )
+                    db.add(session)
+                    sessions_created += 1
+            current_date += datetime.timedelta(days=1)
+
+        db.commit()
+        # bot.answer_callback_query(
+        #     call.id,
+        #     f"Created {sessions_created} free sessions for next month!",
+        #     show_alert=True,
+        # )
+        bot.edit_message_text(
+            f"✅ Successfully generated {sessions_created} free sessions for 30 days!",
+            call.message.chat.id,
+            generating_msg.message_id,
+        )
+        
+    if call.data == "REPORT_ALL_PAYMENTS":
+        #get user all payment and send him pdf version of exel file
+        payments = db.query(models.Payment).filter_by(user_id=call.from_user.id).all()
+        if not payments:
+            bot.send_message(call.message.chat.id, "No payment history found.")
+            return
+        # Create a DataFrame from payment data
+        payment_data = []
+        for payment in payments:
+            # Get session details for this payment
+            session = db.query(models.Session).filter_by(id=payment.session_id).first()
+            
+            # Format date for better readability
+            payment_date = payment.payment_date.strftime("%Y-%m-%d %H:%M")
+            session_date = session.session_date.strftime("%Y-%m-%d") if session else "N/A"
+            
+            payment_data.append({
+                "Payment ID": payment.id,
+                "Session Date": session_date,
+                "Time Slot": session.time_slot if session else "N/A",
+                "Amount": f"{payment.amount} $",
+                "Payment Date": payment_date
+            })
+        
+        # Create Excel file in memory
+        output_excel = BytesIO()
+        df = pd.DataFrame(payment_data)
+        df.to_excel(output_excel, index=False)
+        output_excel.seek(0)
+        
+        # Send the Excel file
+        bot.send_document(
+            call.message.chat.id,
+            output_excel,
+            visible_file_name=f"payment_history_{call.from_user.id}.xlsx",
+            caption="Your payment history report"
+        )
+            
 
 
-def handle_surname(message):
-    user_id = message.from_user.id
-    user_onboarding_state[user_id]["surname"] = message.text.strip()
-    keyboard = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True).add(
-        KeyboardButton(user.Buttons.SHEAR, request_contact=True)
-    )
-    bot.send_message(
-        message.from_user.id,
-        user.Messages.SHEAR_YOUR_NUMBER,
-        reply_markup=keyboard,
-    )
+@bot.message_handler(func=lambda message: True)
+@inject
+def message_center(message, db: Session = Dependency(get_db)):
+    if message.text == user.Buttons.SHOW_PROFILE:
+        user_db = db.query(User).filter_by(user_id=message.from_user.id).first()
+        if not user_db:
+            bot.send_message(
+                message.chat.id,
+                "You need to register first. Use /start.",
+            )
+            return
+        status = {
+            VerificationStatus.VERIFIED: "🟢 تایید شده",
+            VerificationStatus.PENDING: "🟡 در حال بررسی",
+            VerificationStatus.REJECTED: "🔴 رد شده",
+        }
+        account_type = {
+            UserType.EMPLOYEE: "👨‍💼 کارمندی",
+            UserType.STUDENT: "👨‍🎓 دانشجویی",
+            UserType.GENERAL: "🤵 عمومی",
+        }
+        msg = (f"*پروفایل کاربری*\n"
+        f"نام: {user_db.name}\n"
+        f"نام خانوادگی: {user_db.surname}\n"
+        f"شماره تماس: {user_db.phone_number}+\n"
+        f"نوع حساب: {account_type[user_db.account_type]}\n"
+        f"وضعیت: {status[user_db.is_verified]}\n"
+        # f"تاریخ ثبت نام: {user_db.created_at}\n"
+        )
+        bot.send_message(message.chat.id, msg, parse_mode="Markdown")
+        return
+    if message.text == user.Buttons.SHOW_SESSIONS:
+        user_id = message.from_user.id
+        user_db = db.query(User).filter_by(user_id=user_id).first()
+        if not user_db:
+            bot.send_message(message.chat.id, "You need to register first. Use /start.")
+            return
+        today = datetime.date.today()
+        dates = [today + datetime.timedelta(days=i) for i in range(3)]
+        sessions = (
+            db.query(models.Session).filter(models.Session.session_date.in_(dates)).all()
+        )
+        if not sessions:
+            bot.send_message(message.chat.id, "No sessions available for the next 3 days.")
+            return
+        sessions_by_date = {}
+        for s in sessions:
+            date_key = s.session_date
+            if date_key not in sessions_by_date:
+                sessions_by_date[date_key] = []
+            sessions_by_date[date_key].append(s)
+        
+        msg = "*سانس های زمین*\n"
+        keyboard = InlineKeyboardMarkup()
+        # Iterate through dates in order
+        for date in sorted(sessions_by_date.keys()):
+            # Get day name in Persian
+            day_name_en = day_name[date.weekday()]
+            day_name_fa = PERSIAN_DAY_NAMES.get(day_name_en, day_name_en)
+
+            
+            # Add day header
+            keyboard.row(
+                InlineKeyboardButton(
+                    f"{day_name_fa}",
+                    callback_data=f"SESSION_DATE_{date}"
+                )
+            )
+            
+        bot.send_message(
+            message.chat.id, msg,reply_markup=keyboard
+        )
+        return
+    if message.text == user.Buttons.SHOW_PAYMENT_HISTORY:
+        user_id = message.from_user.id
+        user_db = db.query(User).filter_by(user_id=user_id).first()
+        if not user_db:
+            bot.send_message(message.chat.id, "You need to register first. Use /start.")
+            return
+        payments = db.query(models.Payment).filter_by(user_id=user_id).first()
+        if not payments:
+            bot.send_message(message.chat.id, "No payment history found.")
+            return
+        msg = "*تاریخچه پرداخت*\n"
+        keyboard = InlineKeyboardMarkup()
+        keyboard.row(InlineKeyboardButton("گزارش سه تراکنش اخیر", callback_data="REPORT_RECENT_PAYMENTS"))
+        keyboard.row(InlineKeyboardButton("گزارش تمام تراکنش ها", callback_data="REPORT_ALL_PAYMENTS"))
+        bot.send_message(
+            message.chat.id,
+            msg,
+            reply_markup=keyboard
+        )
+        # for p in payments:
+        #     session = db.query(models.Session).filter_by(id=p.session_id).first()
+        #     msg += (
+        #         f"سانس: {Gregorian(session.session_date).persian_string()} {session.time_slot}\n"
+        #         f"مبلغ: ${p.amount}\n"
+        #         f"تاریخ پرداخت: {p.payment_date}\n\n"
+        #     )
+        # bot.send_message(message.chat.id, msg, parse_mode="Markdown")
+        return
+
+def handle_veryfication_token(message, db_user: User):
+    if db_user.user_id == message.from_user.id:
+        try:
+            input_text = message.text.strip()
+            # Convert Persian/Arabic numerals to ASCII digits
+            cleaned = convert_persian_numbers(input_text)
+            cleaned = re.sub(r"\D+", "", cleaned.strip(), flags=re.UNICODE)
+            if not cleaned:
+                msg = bot.reply_to(message, user.Messages.INVALID_NUMBER)
+                bot.register_next_step_handler(msg, handle_veryfication_token)
+                return
+
+            db_user.veryfication_token = cleaned
+            msg = bot.reply_to(message, user.Messages.ENTER_YOUR_NAME)
+            bot.register_next_step_handler(msg, handle_name, db_user)
+        except:
+            raise ValueError("Invalid input. Please enter a valid number.")
+    return
+
+
+def handle_name(message, db_user: User):
+    if db_user.user_id == message.from_user.id:
+        try:
+            cleaned = re.sub(r"[0-9\W_]+", " ", message.text.strip(), flags=re.UNICODE)
+            cleaned = re.sub(r"\s+", " ", cleaned).strip()
+            if not cleaned:
+                msg = bot.reply_to(message, user.Messages.INVALID_NAME)
+                bot.register_next_step_handler(msg, handle_name, db_user)
+                return
+            db_user.name = cleaned
+            msg = bot.reply_to(message, user.Messages.ENTER_YOUR_SURNAME)
+            bot.register_next_step_handler(msg, handle_surname, db_user)
+        except:
+            raise ValueError("Invalid input. Please enter a valid name.")
+    return
+
+@inject
+def handle_surname(message, db_user: User,db: Session = Dependency(get_db)):
+    if db_user.user_id == message.from_user.id:
+        try:
+            cleaned = re.sub(r"[0-9\W_]+", " ", message.text.strip(), flags=re.UNICODE)
+            cleaned = re.sub(r"\s+", " ", cleaned).strip()
+            if not cleaned:
+                msg = bot.reply_to(message, user.Messages.INVALID_SURNAME)
+                bot.register_next_step_handler(msg, handle_surname, db_user)
+                return
+            db_user.surname = cleaned
+            keyboard = ReplyKeyboardMarkup(
+                resize_keyboard=True, one_time_keyboard=True
+            ).add(KeyboardButton(user.Buttons.SHEAR, request_contact=True))
+            msg = bot.reply_to(message, user.Messages.SHEAR_YOUR_NUMBER,reply_markup=keyboard)
+            db.add(db_user)
+            db.commit()
+        except:
+            raise ValueError("Invalid input. Please enter a valid surname.")
+    return
+
+
     # bot.register_next_step_handler(msg, handle_phone_number)
 
 
 @bot.message_handler(content_types=["contact"])
 @inject
 def handle_phone_number(message, db=Dependency(get_db)):
-    user_id = message.from_user.id
-    if user_id not in user_onboarding_state:
+    user_db = db.query(User).filter_by(user_id=message.from_user.id).first()
+    if not user_db:
+        bot.send_message(
+            message.chat.id,
+            "You need to register first. Use /start.",
+        )
         return
-    user_onboarding_state[user_id]["phone_number"] = message.contact.phone_number
-    data = user_onboarding_state[user_id].copy()
-    user_onboarding_state.pop(user_id, None)
-    user_db = User(
-        user_id=user_id,
-        name=data["name"],
-        surname=data["surname"],
-        phone_number=data["phone_number"],
-        account_type=UserType[data["account_type"]],
-        veryfication_token=data["veryfication_token"],
-        is_active = True,
-        is_verified = VerificationStatus.VERIFIED if data["account_type"] == "GENERAL" else VerificationStatus.PENDING,
+    elif user_db.phone_number:
+        return
+    elif all(user_db.name and user_db.surname) and not user_db.phone_number:
+        user_db.phone_number = message.contact.phone_number
+        user_db.is_active=True
+        user_db.is_verified=(
+            VerificationStatus.VERIFIED
+            if user_db.account_type == "GENERAL"
+            else VerificationStatus.PENDING
+        )
+        db.commit()
+        db.refresh(user_db)
         
-    )
-    db.add(user_db)
-    db.commit()
-    keyboard = ReplyKeyboardMarkup(
+        keyboard = ReplyKeyboardMarkup(
         resize_keyboard=True,
         row_width=3,
-    )
-    buttons = (
-        KeyboardButton(user.Buttons.SHOW_SESSIONS),
-        KeyboardButton(user.Buttons.SHOW_PAYMENT_HISTORY),
-        KeyboardButton(user.Buttons.SHOW_PROFILE),
-    )
-    for button in buttons:
-        keyboard.add(button)
-    
-    for i in range(data['first_message'],message.message_id+1):
-        bot.delete_message(message.chat.id,i)
-    bot.send_message(
-        message.from_user.id,
-        user.Messages.SUCCESSFUL_REGISTRATION,
-        reply_markup=keyboard,
-    )
+        )
+        buttons = (
+            KeyboardButton(user.Buttons.SHOW_SESSIONS),
+            KeyboardButton(user.Buttons.SHOW_PAYMENT_HISTORY),
+            KeyboardButton(user.Buttons.SHOW_PROFILE),
+        )
+        for button in buttons:
+            keyboard.add(button)
+        bot.send_message(
+            message.from_user.id,
+            user.Messages.SUCCESSFUL_REGISTRATION
+
+        )
+        bot.send_message(
+            message.from_user.id,
+            user.Messages.WELLCOME_BACK,
+            reply_markup=keyboard,
+        )
+        first_message = user_boarding[message.from_user.id]["first_message"]
+        user_boarding.pop(message.from_user.id, None)
+        for i in range(first_message, message.message_id + 1):
+            bot.delete_message(message.chat.id, i)
+
 
 
 # @bot.message_handler(commands=["sessions"])
@@ -383,8 +760,6 @@ def handle_phone_number(message, db=Dependency(get_db)):
 # ADMIN_user_id = 1697165816  # <-- Replace with your admin Telegram ID
 
 
-
-
 # @bot.message_handler(func=lambda message: True)
 # @inject
 # def admin_toggle_session_action(message, db=Dependency(get_db)):
@@ -494,4 +869,5 @@ def handle_phone_number(message, db=Dependency(get_db)):
 #     )
 
 
-bot.infinity_polling()
+# bot.infinity_polling()
+bot.polling(none_stop=True, interval=0)
