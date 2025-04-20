@@ -11,6 +11,8 @@ from sqlalchemy import (
     Integer,
     String,
 )
+import uuid
+
 from sqlalchemy.orm import relationship
 
 from .database import Base
@@ -54,7 +56,7 @@ class PaymentCategory(Base):
     __tablename__ = "payment_categories"
     id = Column(Integer, primary_key=True, autoincrement=True)
     account_type = Column(Enum(UserType), nullable=False)
-    session_cost = Column(DECIMAL(10, 2), nullable=False)
+    session_cost = Column(DECIMAL(10), nullable=False)
 
 
 class Session(Base):
@@ -64,7 +66,7 @@ class Session(Base):
     time_slot = Column(String(20), nullable=False)
     available = Column(Boolean, default=True)
     booked_user_id = Column(Integer, ForeignKey("users.user_id"))
-    cost = Column(DECIMAL(10, 2), nullable=False)
+    cost = Column(DECIMAL(10), nullable=False)
     user = relationship(
         "User", back_populates="sessions", foreign_keys=[booked_user_id]
     )
@@ -75,11 +77,12 @@ class Session(Base):
 
 class Payment(Base):
     __tablename__ = "payments"
-    id = Column(Integer, primary_key=True, autoincrement=True)
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id = Column(Integer, ForeignKey("users.user_id"), nullable=False)
     session_id = Column(Integer, ForeignKey("sessions.id"), nullable=False)
     payment_date = Column(DateTime, nullable=False)
-    amount = Column(DECIMAL(10, 2), nullable=False)
+    amount = Column(DECIMAL(10), nullable=False)
+    verified = Column(Boolean, default=False)
     user = relationship("User", back_populates="payments", foreign_keys=[user_id])
     session = relationship(
         "Session", back_populates="payments", foreign_keys=[session_id]
