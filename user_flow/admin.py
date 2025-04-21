@@ -10,52 +10,88 @@ from utils.jalali import Gregorian
 import datetime
 from calendar import day_name
 import threading
+from math import ceil # Add this import
+
+# Define constants for pagination
+USERS_PER_PAGE = 10
 
 class UserFlow:
     def __init__(self,bot):
         self.bot = bot
-    def start(self,call,message=None,first_time=False):
-        markup = InlineKeyboardMarkup()
+    def _get_session_or_warn(self, call, db, session_id):
+        """Fetches a session by ID or sends a warning if not found."""
+        session = db.query(models.Session).filter_by(id=session_id).first()
+        if not session:
+            try:
+                # Translate: "This session is no longer available."
+                self.bot.answer_callback_query(
+                    call.id, "این سانس دیگر در دسترس نیست.", show_alert=True
+                )
+            except Exception as e:
+                print(f"Error answering callback query: {e}") # Log error if needed
+            return None
+        return session
+
+    def start(self, call, message=None, first_time=False):
+        markup = InlineKeyboardMarkup(row_width=2) # Adjust row width if needed
         markup.add(
-            InlineKeyboardButton("View Users", callback_data="ADMIN_VIEW_USERS"),
-            InlineKeyboardButton("View Sessions", callback_data="ADMIN_VIEW_SESSIONS"),
-        )
-        markup.add(
+            # Translate: "View Users"
+            InlineKeyboardButton("مشاهده کاربران", callback_data="ADMIN_VIEW_USERS_PAGE_1"), # Start on page 1
+            # Translate: "View Sessions"
+            InlineKeyboardButton("مشاهده سانس‌ها", callback_data="ADMIN_VIEW_SESSIONS"),
+            # Translate: "Generate Excel Report"
             InlineKeyboardButton(
-                "Generate Excel Report", callback_data="ADMIN_GENERATE_REPORT"
+                "دریافت گزارش اکسل", callback_data="ADMIN_GENERATE_REPORT"
+            ),
+            # Translate: "Generate Monthly Sessions"
+            InlineKeyboardButton(
+                "ایجاد سانس‌های ماهانه", callback_data="ADMIN_GENERATE_SESSIONS"
             ),
         )
-        markup.add(
-            InlineKeyboardButton(
-                "Generate Monthly Sessions", callback_data="ADMIN_GENERATE_SESSIONS"
-            )
-        )
-        if first_time:
-            self.bot.send_message(message.chat.id, "Admin Panel:", reply_markup=markup)
+        # Translate: "Admin Panel:"
+        text = "پنل مدیریت:"
+        if first_time and message:
+            self.bot.send_message(message.chat.id, text, reply_markup=markup)
+        elif call:
+            try:
+                self.bot.edit_message_text(
+                    text,
+                    chat_id=call.message.chat.id,
+                    message_id=call.message.message_id,
+                    reply_markup=markup,
+                )
+            except Exception as e:
+                print(f"Error editing message: {e}") # Handle potential API errors (e.g., message not modified)
         else:
-            self.bot.edit_message_text(
-                "Admin panel:",
-                chat_id=call.message.chat.id,
-                message_id=call.message.message_id,
-                reply_markup=markup,
-            )
-    def seesion_date(self,call,db):
-        date_str = call.data.split("_")[-1]
-        date = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
+             print("Error: 'start' called without 'call' or 'message'.") # Log error case
+
+
+    def seesion_date(self, call, db):
+        try:
+            date_str = call.data.split("_")[-1]
+            date = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
+        except (IndexError, ValueError):
+            # Translate: "Invalid date format."
+            self.bot.answer_callback_query(call.id, "فرمت تاریخ نامعتبر است.", show_alert=True)
+            return
+
         sessions = (
-            db.query(models.Session).filter(models.Session.session_date == date).all()
+            db.query(models.Session).filter(models.Session.session_date == date).order_by(models.Session.time_slot).all() # Order sessions by time
         )
         jalali_date = Gregorian(date).persian_string()
-        msg = f"*سانس های زمین برای {jalali_date}*\n"
+        msg = f"*سانس‌های زمین برای {jalali_date}*\n" # Already Persian
         keyboard = InlineKeyboardMarkup()
+
         for s in sessions:
             if s.booked_user_id:
-                btn_text = f"🔴{s.time_slot}"
+                # Translate: "(Booked)"
+                btn_text = f"🔴 {s.time_slot} (رزرو شده)"
+            elif s.available:
+                # Translate: "(Available)"
+                btn_text = f"🟢 {s.time_slot} (موجود)"
             else:
-                if s.available:
-                    btn_text = f"🟢{s.time_slot}"
-                else:
-                    btn_text = f"🟡{s.time_slot}"
+                # Translate: "(Inactive)"
+                btn_text = f"🟡 {s.time_slot} (غیرفعال)"
 
             keyboard.add(
                 InlineKeyboardButton(
@@ -63,252 +99,405 @@ class UserFlow:
                 )
             )
         keyboard.add(
-            InlineKeyboardButton("بازگشت", callback_data=f"ADMIN_VIEW_SESSIONS")
+            InlineKeyboardButton("بازگشت", callback_data="ADMIN_VIEW_SESSIONS") # Already Persian
         )
-        self.bot.edit_message_text(
-            msg,
-            chat_id=call.message.chat.id,
-            message_id=call.message.message_id,
-            reply_markup=keyboard,
-        )
-    def manage_session(self,call,db):
-        session_id = int(call.data.split("_")[-1])
-        session = db.query(models.Session).filter_by(id=session_id).first()
-        if not session:
-            self.bot.answer_callback_query(
-                call.id, "This session is no longer available.", show_alert=True
+        try:
+            self.bot.edit_message_text(
+                msg,
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                reply_markup=keyboard,
+                parse_mode="Markdown" # Ensure Markdown is parsed
             )
+        except Exception as e:
+            print(f"Error editing message: {e}")
+
+    def manage_session(self, call, db):
+        try:
+            session_id = int(call.data.split("_")[-1])
+        except (IndexError, ValueError):
+            # Translate: "Invalid session ID."
+            self.bot.answer_callback_query(call.id, "شناسه سانس نامعتبر است.", show_alert=True)
             return
+
+        session = self._get_session_or_warn(call, db, session_id)
+        if not session:
+            return # Warning already sent by helper
+
+        markup = InlineKeyboardMarkup()
+        session_info = f"سانس: {Gregorian(session.session_date).persian_string()} {session.time_slot}" # Already Persian
+
         if session.booked_user_id:
             booked_user = (
                 db.query(models.User).filter_by(user_id=session.booked_user_id).first()
             )
-            markup = InlineKeyboardMarkup()
+            # Translate: "توسط ... گرفته شده است." and "توسط کاربر نامشخص گرفته شده است."
+            user_info = f"توسط {booked_user.name} {booked_user.surname} رزرو شده است." if booked_user else "توسط کاربر نامشخص رزرو شده است."
+            msg = f"{session_info}\n{user_info}"
             markup.add(
+                # Translate: "لغو و استرداد وجه"
                 InlineKeyboardButton(
-                    f"لغو سانس", callback_data=f"ADMIN_SESSION_REFUND_{session_id}"
+                    "لغو رزرو و استرداد وجه", callback_data=f"ADMIN_SESSION_REFUND_{session_id}"
                 )
             )
-            markup.add(
-                InlineKeyboardButton(
-                    "بازگشت به منو سانس ها",
-                    callback_data=f"ADMIN_SESSION_DATE_{session.session_date}",
-                )
-            )
-            self.bot.edit_message_text(
-                f"سانس: {Gregorian(session.session_date).persian_string()} {session.time_slot}\n توسط {booked_user.name} {booked_user.surname} گرفته شده است.",
-                chat_id=call.message.chat.id,
-                message_id=call.message.message_id,
-                reply_markup=markup,
-            )
-            return
         else:
-            markup = InlineKeyboardMarkup()
-            markup.add(
-                InlineKeyboardButton(
-                    "غیر فعال سازی" if session.available else "فعال سازی",
-                    callback_data=(
-                        f"ADMIN_DEACTIVATE_SESSION_{session_id}"
-                        if session.available
-                        else f"ADMIN_ACTIVATE_SESSION_{session_id}"
-                    ),
-                )
+            msg = session_info
+            # Translate: "غیر فعال سازی" and "فعال سازی"
+            action_text = "غیرفعال‌سازی" if session.available else "فعال‌سازی"
+            action_callback = (
+                f"ADMIN_DEACTIVATE_SESSION_{session_id}"
+                if session.available
+                else f"ADMIN_ACTIVATE_SESSION_{session_id}"
             )
             markup.add(
-                InlineKeyboardButton(
-                    "بازگشت به منو سانس ها",
-                    callback_data=f"ADMIN_SESSION_DATE_{session.session_date}",
-                )
+                InlineKeyboardButton(action_text, callback_data=action_callback)
             )
+
+        markup.add(
+            # Translate: "بازگشت به منو سانس ها"
+            InlineKeyboardButton(
+                "بازگشت به لیست سانس‌ها",
+                callback_data=f"ADMIN_SESSION_DATE_{session.session_date}",
+            )
+        )
+        try:
             self.bot.edit_message_text(
-                f"سانس: {Gregorian(session.session_date).persian_string()} {session.time_slot}",
+                msg,
                 chat_id=call.message.chat.id,
                 message_id=call.message.message_id,
                 reply_markup=markup,
             )
+        except Exception as e:
+            print(f"Error editing message: {e}")
+
+
+    def session_refund(self, call, db):
+        try:
+            session_id = int(call.data.split("_")[-1])
+        except (IndexError, ValueError):
+            # Translate: "Invalid session ID."
+            self.bot.answer_callback_query(call.id, "شناسه سانس نامعتبر است.", show_alert=True)
             return
-    def session_refund(self,call,db):
-        session_id = int(call.data.split("_")[-1])
-        session = db.query(models.Session).filter_by(id=session_id).first()
+
+        session = self._get_session_or_warn(call, db, session_id)
         if not session:
-            self.bot.answer_callback_query(
-                call.id, "This session is no longer available.", show_alert=True
-            )
             return
-        self.bot.send_message(
-            session.booked_user_id,
-            f"سانس انتخابی شما لغو شده لطفا جهت دریافت وجه با پشتیبانی تماس بگیرید\n *اطلاعات سانس*\n{Gregorian(session.session_date).persian_string()} {session.time_slot}",
-        )
-    def deactive_session(self,call,db):
-        session_id = int(call.data.split("_")[-1])
-        session = db.query(models.Session).filter_by(id=session_id).first()
-        if not session:
-            self.bot.answer_callback_query(
-                call.id, "This session is no longer available.", show_alert=True
-            )
+
+        if not session.booked_user_id:
+            # Translate: "This session is not booked."
+            self.bot.answer_callback_query(call.id, "این سانس رزرو نشده است.", show_alert=True)
             return
-        session.available = False
+
+        # --- Logic for refund (e.g., update session, notify user) ---
+        booked_user_id = session.booked_user_id
+        session_details = f"{Gregorian(session.session_date).persian_string()} {session.time_slot}"
+
+        # Update session state (make it available again, remove user booking)
+        session.booked_user_id = None
+        session.available = True # Or False depending on desired state after refund
         db.commit()
         db.refresh(session)
-        self.bot.edit_message_text(
-            f"سانس با موفقیت غبرفعال شد ✅",
-            chat_id=call.message.chat.id,
-            message_id=call.message.message_id,
-            reply_markup=InlineKeyboardMarkup().add(
-                InlineKeyboardButton(
-                    "بازگشت به منو سانس ها",
-                    callback_data=f"ADMIN_SESSION_DATE_{session.session_date}",
-                )
-            ),
-        )
-        return
-    def active_session(self,call,db):
-        session_id = int(call.data.split("_")[-1])
-        session = db.query(models.Session).filter_by(id=session_id).first()
-        if not session:
-            self.bot.answer_callback_query(
-                call.id, "This session is no longer available.", show_alert=True
-            )
-            return
-        session.available = True
-        db.commit()
-        db.refresh(session)
-        self.bot.edit_message_text(
-            f"سانس با موفقیت فعال شد ✅",
-            chat_id=call.message.chat.id,
-            message_id=call.message.message_id,
-            reply_markup=InlineKeyboardMarkup().add(
-                InlineKeyboardButton(
-                    "بازگشت به منو سانس ها",
-                    callback_data=f"ADMIN_SESSION_DATE_{session.session_date}",
-                )
-            ),
-        )
-        return
-    def view_sessions(self,call,db):
-        user_id = call.from_user.id
-        user_db = db.query(models.User).filter_by(user_id=user_id).first()
-        if not user_db:
+
+        # Notify user
+        try:
+            # Translate user notification message
             self.bot.send_message(
-                call.message.chat.id, "You need to register first. Use /start."
+                booked_user_id,
+                f"سانس انتخابی شما توسط مدیریت لغو شد. وجه پرداختی به زودی به حساب شما بازگردانده خواهد شد.\n*اطلاعات سانس*\n{session_details}",
+                parse_mode="Markdown"
             )
+        except Exception as e:
+            print(f"Error sending refund notification to user {booked_user_id}: {e}")
+
+        # Update the admin message
+        # Translate: "✅ سانس لغو و کاربر مطلع شد."
+        self.bot.answer_callback_query(call.id, "✅ سانس لغو و به کاربر اطلاع داده شد.")
+        # Go back to the session management view for this session
+        self.manage_session(call, db) # Refresh the view
+
+
+    def _toggle_session_availability(self, call, db, available_status):
+        """Helper to activate/deactivate a session."""
+        try:
+            session_id = int(call.data.split("_")[-1])
+        except (IndexError, ValueError):
+            # Translate: "Invalid session ID."
+            self.bot.answer_callback_query(call.id, "شناسه سانس نامعتبر است.", show_alert=True)
             return
+
+        session = self._get_session_or_warn(call, db, session_id)
+        if not session:
+            return
+
+        if session.booked_user_id:
+             # Translate: "Cannot change status of a booked session."
+             self.bot.answer_callback_query(call.id, "امکان تغییر وضعیت سانس رزرو شده وجود ندارد.", show_alert=True)
+             return
+
+        session.available = available_status
+        db.commit()
+        db.refresh(session)
+
+        # Translate: "فعال" and "غیرفعال"
+        status_text = "فعال" if available_status else "غیرفعال"
+        try:
+            # Translate: "سانس با موفقیت ... شد ✅"
+            self.bot.edit_message_text(
+                f"سانس با موفقیت {status_text} شد ✅",
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                reply_markup=InlineKeyboardMarkup().add(
+                    InlineKeyboardButton(
+                        # Translate: "بازگشت به منو سانس ها"
+                        "بازگشت به لیست سانس‌ها",
+                        callback_data=f"ADMIN_SESSION_DATE_{session.session_date}",
+                    )
+                ),
+            )
+        except Exception as e:
+            print(f"Error editing message: {e}")
+
+    def deactive_session(self, call, db):
+        self._toggle_session_availability(call, db, available_status=False)
+
+    def active_session(self, call, db):
+        self._toggle_session_availability(call, db, available_status=True)
+
+
+    def view_sessions(self, call, db):
+        # No need to check user registration here if this is admin-only flow
         today = datetime.date.today()
-        dates = [today + datetime.timedelta(days=i) for i in range(3)]
+        # Show sessions for the next 7 days, for example
+        num_days_to_show = 7
+        dates = [today + datetime.timedelta(days=i) for i in range(num_days_to_show)]
+
+        # Fetch sessions efficiently
         sessions = (
             db.query(models.Session)
             .filter(models.Session.session_date.in_(dates))
+            .order_by(models.Session.session_date) # Order by date
             .all()
         )
-        if not sessions:
-            self.bot.send_message(
-                call.message.chat.id, "No sessions available for the next 3 days."
-            )
-            return
+
         sessions_by_date = {}
         for s in sessions:
             date_key = s.session_date
             if date_key not in sessions_by_date:
                 sessions_by_date[date_key] = []
-            sessions_by_date[date_key].append(s)
+            sessions_by_date[date_key].append(s) # Sessions are already ordered by time if fetched that way
 
-        msg = "*سانس های زمین*\n"
+        # Translate: "*نمایش سانس های زمین*"
+        msg = "*نمایش سانس‌های زمین*\n"
         keyboard = InlineKeyboardMarkup()
-        # Iterate through dates in order
-        for date in sorted(sessions_by_date.keys()):
-            # Get day name in Persian
-            day_name_en = day_name[date.weekday()]
-            day_name_fa = PERSIAN_DAY_NAMES.get(day_name_en, day_name_en)
 
-            # Add day header
-            keyboard.row(
-                InlineKeyboardButton(
-                    f"{day_name_fa}", callback_data=f"ADMIN_SESSION_DATE_{date}"
-                )
-            )
-        keyboard.row(
-            InlineKeyboardButton("بازگشت به منو", callback_data=f"ADMIN_START")
-        )
-        self.bot.edit_message_text(
-            msg,
-            chat_id=call.message.chat.id,
-            message_id=call.message.message_id,
-            reply_markup=keyboard,
-        )
-        return
-    def view_users(self,call,db):
-        # add pagination for it
+        if not sessions_by_date:
+             # Translate: "No sessions found for the next ... days."
+             msg += f"\nسانسی برای {num_days_to_show} روز آینده یافت نشد."
+        else:
+            # Iterate through the desired dates to maintain order
+            for date in dates:
+                if date in sessions_by_date: # Check if there are sessions for this date
+                    day_name_en = day_name[date.weekday()]
+                    day_name_fa = PERSIAN_DAY_NAMES.get(day_name_en, day_name_en)
+                    jalali_date_str = Gregorian(date).persian_string() # Add Jalali date string
 
-        users = db.query(models.User).all()
-        msg = "*کاربران:*\n"
-        for u in users:
-            msg += f"{u.name} {u.surname} | {u.phone_number} | {u.account_type.value} | {u.is_verified.value}\n"
-        self.bot.send_message(call.message.chat.id, msg or "No users found.")
-    def generate_sessions(self,call,db):
-        generating_msg = self.bot.send_message(
-            call.message.chat.id,
-            "Generating sessions for the next 30 days...",
-        )
-        # Call the function to generate sessions
-        # Get the first day of next month
-        today = datetime.date.today()
-        # Generate sessions for the entire month
-        sessions_created = 0
-        current_date = today + datetime.timedelta(days=1)
-        end_date = today + datetime.timedelta(days=30)
-        general = (
-            db.query(models.PaymentCategory)
-            .filter_by(account_type=models.UserType.GENERAL)
-            .first()
-        )
-        base_cost = general.session_cost
-
-        existing_sessions = (
-            db.query(models.Session)
-            .filter(
-                models.Session.session_date >= current_date,
-                models.Session.session_date <= end_date,
-            )
-            .all()
-        )
-
-        # Create a set of (date, time_slot) tuples for quick lookup
-        existing_session_keys = {
-            (session.session_date, session.time_slot) for session in existing_sessions
-        }
-
-        while current_date <= end_date:
-            # Generate sessions per day
-            for time_slot in TIMESLOTS:
-                # Check if this session already exists
-                if (current_date, time_slot) not in existing_session_keys:
-                    session = models.Session(
-                        session_date=current_date,
-                        time_slot=time_slot,
-                        available=True,
-                        cost=base_cost,
+                    # Add day header button
+                    keyboard.add( # Use add() instead of row() for single button rows
+                        InlineKeyboardButton(
+                            f"{day_name_fa} - {jalali_date_str}", callback_data=f"ADMIN_SESSION_DATE_{date}"
+                        )
                     )
-                    db.add(session)
-                    sessions_created += 1
-            current_date += datetime.timedelta(days=1)
 
-        db.commit()
-        # bot.answer_callback_query(
-        #     call.id,
-        #     f"Created {sessions_created} free sessions for next month!",
-        #     show_alert=True,
-        # )
-        self.bot.edit_message_text(
-            f"✅ Successfully generated {sessions_created} free sessions for 30 days!",
-            call.message.chat.id,
-            generating_msg.message_id,
+        keyboard.add(
+            # Translate: "بازگشت به منو اصلی"
+            InlineKeyboardButton("بازگشت به پنل مدیریت", callback_data="ADMIN_START")
         )
-        # Schedule message deletion after 5 seconds
-        def delete_message():
+        try:
+            self.bot.edit_message_text(
+                msg,
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                reply_markup=keyboard,
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            print(f"Error editing message: {e}")
+
+
+    def view_users(self, call, db):
+        page = 1
+        # Extract page number from callback data if present
+        if call.data.startswith("ADMIN_VIEW_USERS_PAGE_"):
             try:
-                self.bot.delete_message(call.message.chat.id, generating_msg.message_id)
-            except Exception as e:
-                print(f"Error deleting message: {e}")
-                
-        timer = threading.Timer(5.0, delete_message)
-        timer.start()
+                page = int(call.data.split("_")[-1])
+            except (ValueError, IndexError):
+                page = 1 # Default to page 1 on error
+
+        offset = (page - 1) * USERS_PER_PAGE
+        users_query = db.query(models.User)
+        total_users = users_query.count()
+        # Use math.ceil for calculating total_pages
+        total_pages = ceil(total_users / USERS_PER_PAGE) if total_users > 0 else 1
+        users_page = users_query.offset(offset).limit(USERS_PER_PAGE).all()
+
+        # Translate: "*کاربران (صفحه .../...):*"
+        msg = f"*کاربران (صفحه {page}/{total_pages}):*\n\n"
+        if not users_page:
+            # Translate: "No users found."
+            msg += "کاربری یافت نشد."
+        else:
+            for u in users_page:
+                 # Added default values for potentially missing attributes
+                 acc_type = getattr(u.account_type, 'value', 'نامشخص') # Translate 'N/A'
+                 verified_status = getattr(u.is_verified, 'value', 'نامشخص') # Translate 'N/A'
+                 # Translate labels
+                 msg += f"👤 نام: {u.name or ''} {u.surname or ''}\n" \
+                        f"📞 شماره تماس: {u.phone_number or 'ثبت نشده'}\n" \
+                        f"🏷️ نوع حساب: {acc_type}\n" \
+                        f"✅ وضعیت تایید: {verified_status}\n" \
+                        f"--------------------\n"
+
+
+        markup = InlineKeyboardMarkup()
+        nav_buttons = []
+        if page > 1:
+            nav_buttons.append(
+                # Translate: "⬅️ قبلی"
+                InlineKeyboardButton("⬅️ قبلی", callback_data=f"ADMIN_VIEW_USERS_PAGE_{page-1}")
+            )
+        if page < total_pages:
+            nav_buttons.append(
+                # Translate: "بعدی ➡️"
+                InlineKeyboardButton("بعدی ➡️", callback_data=f"ADMIN_VIEW_USERS_PAGE_{page+1}")
+            )
+
+        if nav_buttons:
+            markup.row(*nav_buttons) # Add navigation buttons in one row
+
+        # Translate: "بازگشت به منو اصلی"
+        markup.add(InlineKeyboardButton("بازگشت به پنل مدیریت", callback_data="ADMIN_START"))
+
+        try:
+            # Use edit_message_text if navigating pages, send_message if called initially?
+            # Assuming edit for simplicity as it replaces the previous message/keyboard
+             self.bot.edit_message_text(
+                 msg,
+                 chat_id=call.message.chat.id,
+                 message_id=call.message.message_id,
+                 reply_markup=markup,
+                 parse_mode="Markdown"
+             )
+        except Exception as e:
+             # If message hasn't changed (e.g., same page content), API might error
+             if "message is not modified" not in str(e):
+                 print(f"Error editing message for view_users: {e}")
+             # Optionally, answer callback query to acknowledge button press even if message doesn't change
+             try:
+                 self.bot.answer_callback_query(call.id)
+             except Exception: pass # Ignore errors here
+
+
+    def generate_sessions(self, call, db):
+        try:
+            # Translate: "⏳ در حال تولید سانس ها برای ۳۰ روز آینده..."
+            generating_msg = self.bot.send_message(
+                call.message.chat.id,
+                "⏳ در حال ایجاد سانس‌ها برای ۳۰ روز آینده...",
+            )
+        except Exception as e:
+            print(f"Error sending 'generating' message: {e}")
+            # Optionally notify admin via callback query
+            # Translate: "Error starting generation."
+            self.bot.answer_callback_query(call.id, "خطا در شروع عملیات ایجاد سانس‌ها.", show_alert=True)
+            return
+
+        sessions_created = 0
+        try:
+            # --- Session Generation Logic ---
+            today = datetime.date.today()
+            start_date = today + datetime.timedelta(days=1) # Start from tomorrow
+            end_date = today + datetime.timedelta(days=30) # Up to 30 days from today
+
+            # Fetch base cost once
+            general_category = (
+                db.query(models.PaymentCategory)
+                .filter_by(account_type=models.UserType.GENERAL)
+                .first()
+            )
+            if not general_category:
+                 # Handle error: Base cost category not found
+                 # Translate: "❌ خطا: دسته بندی هزینه پایه یافت نشد."
+                 self.bot.edit_message_text(
+                     "❌ خطا: دسته‌بندی هزینه پایه یافت نشد.",
+                     call.message.chat.id,
+                     generating_msg.message_id,
+                 )
+                 return
+
+            base_cost = general_category.session_cost
+
+            # Fetch existing sessions in the date range efficiently
+            existing_sessions = (
+                db.query(models.Session.session_date, models.Session.time_slot) # Select only needed columns
+                .filter(
+                    models.Session.session_date >= start_date,
+                    models.Session.session_date <= end_date,
+                )
+                .all()
+            )
+            existing_session_keys = set(existing_sessions) # Set of (date, time_slot) tuples
+
+            sessions_to_add = []
+            current_date = start_date
+            while current_date <= end_date:
+                for time_slot in TIMESLOTS:
+                    if (current_date, time_slot) not in existing_session_keys:
+                        sessions_to_add.append(models.Session(
+                            session_date=current_date,
+                            time_slot=time_slot,
+                            available=True,
+                            cost=base_cost,
+                        ))
+                current_date += datetime.timedelta(days=1)
+
+            if sessions_to_add:
+                db.add_all(sessions_to_add)
+                db.commit()
+                sessions_created = len(sessions_to_add)
+
+            # --- Success Message ---
+            # Translate: "✅ با موفقیت ... سانس جدید برای ۳۰ روز آینده ایجاد شد."
+            final_msg = f"✅ با موفقیت {sessions_created} سانس جدید برای ۳۰ روز آینده ایجاد شد."
+            self.bot.edit_message_text(
+                final_msg,
+                call.message.chat.id,
+                generating_msg.message_id,
+            )
+
+        except Exception as e:
+            # --- Error Handling ---
+            db.rollback() # Rollback any partial changes
+            print(f"Error generating sessions: {e}")
+            # Translate: "❌ خطا در تولید سانس ها: ..."
+            error_msg = f"❌ خطا در ایجاد سانس‌ها: {e}"
+            self.bot.edit_message_text(
+                error_msg,
+                call.message.chat.id,
+                generating_msg.message_id,
+            )
+            # Keep the error message visible, don't delete immediately
+            return # Exit before scheduling deletion
+
+        # --- Schedule Deletion of Success/Generating Message ---
+        # Only schedule deletion if successful
+        if sessions_created >= 0: # Check if generation process completed (even if 0 created)
+            def delete_message():
+                try:
+                    self.bot.delete_message(call.message.chat.id, generating_msg.message_id)
+                except Exception as e:
+                    # Ignore deletion errors (e.g., message already deleted)
+                    # print(f"Error deleting message: {e}")
+                    pass
+
+            timer = threading.Timer(7.0, delete_message) # Increased delay slightly
+            timer.start()

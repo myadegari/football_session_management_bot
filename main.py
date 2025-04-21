@@ -78,7 +78,7 @@ def callback_center(call, db: Session = Dependency(get_db)):
         USER_FLOW.book_session(call, db)
     if call.data.startswith("CONFIRM_"):
         USER_FLOW.confirm_session(call, db)
-    if call.data == "ADMIN_VIEW_USERS":
+    if call.data == "ADMIN_VIEW_USERS_PAGE_1":
         ADMIN_FLOW.view_users(call, db)
     if call.data == "ADMIN_VIEW_SESSIONS":
         ADMIN_FLOW.view_sessions(call, db)

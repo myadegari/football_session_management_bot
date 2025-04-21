@@ -31,7 +31,7 @@ class UserFlow:
         user_db = db.query(models.User).filter_by(user_id=user_id).first()
         if user_db:
             if user_db.role == models.UserRole.ADMIN:
-                admin_start(None, self.bot, message, first_time=True)
+                admin_start(None, message, first_time=True)
                 
             elif user_db.role == models.UserRole.USER:
                 keyboard = ReplyKeyboardMarkup(
