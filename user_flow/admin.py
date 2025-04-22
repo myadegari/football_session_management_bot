@@ -1,3 +1,4 @@
+import time
 from telebot.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -9,7 +10,10 @@ from repositories import models
 from utils.jalali import Gregorian
 import datetime
 from calendar import day_name
+from io import BytesIO
 import threading
+
+import pandas as pd
 from math import ceil # Add this import
 
 # Define constants for pagination
@@ -31,9 +35,19 @@ class UserFlow:
                 print(f"Error answering callback query: {e}") # Log error if needed
             return None
         return session
+    def _send_and_delete(self, chat_id, text, delay=5):
+        sent_message = self.bot.send_message(chat_id, text)
+        def delete():
+            time.sleep(delay)
+            try:
+                self.bot.delete_message(chat_id, sent_message.message_id)
+            except Exception as e:
+                print(f"Error deleting message: {e}")
+        threading.Thread(target=delete).start()
 
     def start(self, call, message=None, first_time=False):
-        markup = InlineKeyboardMarkup(row_width=2) # Adjust row width if needed
+        from telebot.types import ReplyKeyboardRemove
+        markup = InlineKeyboardMarkup(row_width=1) # Adjust row width if needed
         markup.add(
             # Translate: "View Users"
             InlineKeyboardButton("مشاهده کاربران", callback_data="ADMIN_VIEW_USERS_PAGE_1"), # Start on page 1
@@ -47,10 +61,17 @@ class UserFlow:
             InlineKeyboardButton(
                 "ایجاد سانس‌های ماهانه", callback_data="ADMIN_GENERATE_SESSIONS"
             ),
+            # Translate: "Change Session Costs"
+            InlineKeyboardButton(
+                "تغییر هزینه سانس‌ها", callback_data="ADMIN_CHANGE_BASED_COST"
+            ),
+            # Translate: "User Verification"
         )
         # Translate: "Admin Panel:"
         text = "پنل مدیریت:"
         if first_time and message:
+            mag = self.bot.send_message(message.chat.id, "در حال ورود به پنل مدیریت...", reply_markup=ReplyKeyboardRemove(selective=True))
+            self.bot.delete_message(message.chat.id, mag.message_id) # Delete the message after sending
             self.bot.send_message(message.chat.id, text, reply_markup=markup)
         elif call:
             try:
@@ -341,24 +362,20 @@ class UserFlow:
         users_page = users_query.offset(offset).limit(USERS_PER_PAGE).all()
 
         # Translate: "*کاربران (صفحه .../...):*"
+        markup = InlineKeyboardMarkup()
         msg = f"*کاربران (صفحه {page}/{total_pages}):*\n\n"
         if not users_page:
             # Translate: "No users found."
             msg += "کاربری یافت نشد."
         else:
             for u in users_page:
-                 # Added default values for potentially missing attributes
-                 acc_type = getattr(u.account_type, 'value', 'نامشخص') # Translate 'N/A'
-                 verified_status = getattr(u.is_verified, 'value', 'نامشخص') # Translate 'N/A'
-                 # Translate labels
-                 msg += f"👤 نام: {u.name or ''} {u.surname or ''}\n" \
-                        f"📞 شماره تماس: {u.phone_number or 'ثبت نشده'}\n" \
-                        f"🏷️ نوع حساب: {acc_type}\n" \
-                        f"✅ وضعیت تایید: {verified_status}\n" \
-                        f"--------------------\n"
+                markup.row(
+                    InlineKeyboardButton(
+                        f"👤 {u.name or ''} {u.surname or ''}",
+                        callback_data=f"ADMIN_VIEW_USER_{page}_{u.user_id}"
+                    )
+                )
 
-
-        markup = InlineKeyboardMarkup()
         nav_buttons = []
         if page > 1:
             nav_buttons.append(
@@ -380,23 +397,210 @@ class UserFlow:
         try:
             # Use edit_message_text if navigating pages, send_message if called initially?
             # Assuming edit for simplicity as it replaces the previous message/keyboard
-             self.bot.edit_message_text(
-                 msg,
-                 chat_id=call.message.chat.id,
-                 message_id=call.message.message_id,
-                 reply_markup=markup,
-                 parse_mode="Markdown"
-             )
+            self.bot.edit_message_text(
+                msg,
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                reply_markup=markup,
+                parse_mode="Markdown"
+            )
         except Exception as e:
-             # If message hasn't changed (e.g., same page content), API might error
-             if "message is not modified" not in str(e):
-                 print(f"Error editing message for view_users: {e}")
-             # Optionally, answer callback query to acknowledge button press even if message doesn't change
-             try:
-                 self.bot.answer_callback_query(call.id)
-             except Exception: pass # Ignore errors here
+            # If message hasn't changed (e.g., same page content), API might error
+            if "message is not modified" not in str(e):
+                print(f"Error editing message for view_users: {e}")
+            # Optionally, answer callback query to acknowledge button press even if message doesn't change
 
+    def view_user_details(self,call,db):
 
+        # try:
+        id = call.data.split("_")[-1]
+        page = call.data.split("_")[-2]
+        user_db = db.query(models.User).filter_by(user_id=int(id)).first()
+        # except:
+        #     # Translate: "Invalid user ID."
+        #     self._send_and_delete(
+        #         call.message.chat.id,
+        #         "شناسه کاربر نامعتبر است.",
+        #         delay=2
+        #     )
+        #     return
+
+        # Add this check to ensure user_db is not None
+        # if not user_db:
+        #     # self._send_and_delete(
+        #     #     call.message.chat.id,
+        #     #     "کاربر مورد نظر یافت نشد.", # Translate: "User not found."
+        #     #     delay=3
+        #     # )
+        #     # Optionally, go back to the user list
+        #     self.view_users(call, db) # This might need adjustment based on how view_users handles call data
+        #     return
+
+        # # Added default values for potentially missing attributes
+        markup = InlineKeyboardMarkup()
+        msg = f"*مشخصات کابر:*\n"
+        # acc_type = getattr(user_db.account_type, 'value', 'نامشخص') # Translate 'N/A'
+        # verified_status = getattr(user_db.is_verified, 'value', 'نامشخص') # Translate 'N/A'
+        # Translate labels
+        msg += f"👤 نام: {user_db.name or ''} {user_db.surname or ''}\n" \
+            f"📞 شماره تماس: {f'{user_db.phone_number}+' or 'ثبت نشده'}\n"
+            # f"🏷️ نوع حساب: {acc_type}\n" \
+            # f"✅ وضعیت تایید: {verified_status}\n"
+
+        markup.add(
+            InlineKeyboardButton(
+                "مشاهده رزروها", callback_data=f"ADMIN_VIEW_USER_BOOKINGS_FROM_{page}_{id}_PAGE_1"
+            ),
+            InlineKeyboardButton(
+                "مشاهده پرداخت‌ها", callback_data=f"ADMIN_VIEW_USER_PAYMENTS_FROM_{page}_{id}_PAGE_1"
+            ),
+            InlineKeyboardButton(
+                "بررسی و تغییر وضعیت کابر", callback_data=f"ADMIN_VIEW_USER_VERIFICATION_FROM_{page}_{id}"
+            ),
+            InlineKeyboardButton(
+                "بازگشت به لیست کاربران", callback_data=f"ADMIN_VIEW_USERS_PAGE_{page}"
+            ),
+            row_width=1
+
+        )
+        try:
+            # Use edit_message_text if navigating pages, send_message if called initially?
+            # Assuming edit for simplicity as it replaces the previous message/keyboard
+            self.bot.edit_message_text(
+                msg,
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                reply_markup=markup,
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            # If message hasn't changed (e.g., same page content), API might error
+            if "message is not modified" not in str(e):
+                print(f"Error editing message for view_users: {e}")
+            # Optionally, answer callback query to acknowledge button press even if message doesn't change
+            try:
+                self.bot.answer_callback_query(call.id)
+            except Exception: pass # Ignore errors here
+    def view_user_bookings(self,call,db):
+        #"ADMIN_VIEW_USER_BOOKINGS_FROM_{page}_{user_id}_PAGE_1"
+        # try:
+        from_page,user_id,_,call_page = call.data.split("_")[-4:]
+        user_db = db.query(models.User).filter_by(user_id=user_id).first()
+        # except:
+        #     # Translate: "Invalid user ID."
+        #     self._send_and_delete(
+        #         call.message.chat.id,
+        #         "شناسه کاربر نامعتبر است.",
+        #         delay=2
+        #     )
+        #     return
+        try:
+            page = int(call_page)
+        except (ValueError, IndexError):
+            page = 1 # Default to page 1 on error
+
+        offset = (page - 1) * USERS_PER_PAGE
+        user_total_booking = db.query(models.Session).filter_by(booked_user_id=user_id).count()
+        # Use math.ceil for calculating total_pages
+        total_pages = ceil(user_total_booking / USERS_PER_PAGE) if user_total_booking > 0 else 1
+        users_page = db.query(models.Session).filter_by(booked_user_id=user_id).offset(offset).limit(USERS_PER_PAGE).all()
+
+        # Added default values for potentially missing attributes
+        markup = InlineKeyboardMarkup()
+        msg = f"*رزروهای کابر:*\n"
+        msg += f"👤 نام: {user_db.name or ''} {user_db.surname or ''}\n"
+
+        if not users_page:
+            # Translate: "No bookings found."
+            msg += "رزروهایی یافت نشد."
+        else:
+            # use pagination
+
+            for booking in users_page:
+                session = db.query(models.Session).filter_by(id=booking.id).first()
+                if session:
+                    jalali_date = Gregorian(session.session_date).persian_string()
+                    msg += f"📅 تاریخ: {jalali_date} - {session.time_slot}\n"
+                else:
+                    msg += "سانس نامعتبر است.\n"
+        nav_buttons = []
+        if page > 1:
+            nav_buttons.append(
+                # Translate: "⬅️ قبلی"
+                InlineKeyboardButton("⬅️ قبلی", callback_data=f"ADMIN_VIEW_USER_BOOKINGS_FROM_{from_page}_{user_id}_PAGE_{page-1}")
+            )
+        if page < total_pages:
+            nav_buttons.append(
+                # Translate: "بعدی ➡️"
+                InlineKeyboardButton("بعدی ➡️", callback_data=f"ADMIN_VIEW_USER_BOOKINGS_FROM_{from_page}_{user_id}_PAGE_{page+1}")
+            )
+
+        if nav_buttons:
+            markup.row(*nav_buttons) # Add navigation buttons in one row
+
+        # Translate: "بازگشت به منو اصلی"
+        markup.add(
+            InlineKeyboardButton(
+                "بازگشت به مشخصات کاربر", callback_data=f"ADMIN_VIEW_USER_{from_page}_{user_id}"
+            ))
+        markup.add(InlineKeyboardButton("بازگشت به پنل مدیریت", callback_data="ADMIN_START"))
+        try:
+            # Use edit_message_text if navigating pages, send_message if called initially?
+            # Assuming edit for simplicity as it replaces the previous message/keyboard
+            self.bot.edit_message_text(
+                msg,
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                reply_markup=markup,
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            # If message hasn't changed (e.g., same page content), API might error
+            if "message is not modified" not in str(e):
+                print(f"Error editing message for view_users: {e}")
+            # Optionally, answer callback query to acknowledge button press even if message doesn't change
+            try:
+                self.bot.answer_callback_query(call.id)
+            except Exception: pass # Ignore errors here
+    def change_based_cost(self,call,db):
+        type_based_costs = db.query(models.PaymentCategory).all()
+        markup = InlineKeyboardMarkup()
+        msg = f"*هزینه های سانس ها:*\n"
+        for type_based_cost in type_based_costs:
+            msg += f"🏷️ نوع حساب: {type_based_cost.account_type.value}\n" \
+                f"💰 هزینه سانس: {type_based_cost.session_cost} تومان\n"
+            markup.add(
+                InlineKeyboardButton(
+                    f"تغییر هزینه {type_based_cost.account_type.value}",
+                    callback_data=f"ADMIN_CHANGE_BASED_COST_{type_based_cost.account_type.value}"
+                )
+            )
+        markup.add(
+            InlineKeyboardButton(
+                "بازگشت به پنل مدیریت",
+                callback_data="ADMIN_START"
+            )
+        )
+        try:
+            self.bot.edit_message_text(
+                msg,
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                reply_markup=markup,
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            # If message hasn't changed (e.g., same page content), API might error
+            if "message is not modified" not in str(e):
+                print(f"Error editing message for view_users: {e}")
+            # Optionally, answer callback query to acknowledge button press even if message doesn't change
+            try:
+                self.bot.answer_callback_query(call.id)
+            except Exception: pass
+    def user_verification(self,call,db):
+        #ADMIN_VIEW_USER_VERIFICATION_FROM_{page}_{id}
+        from_page,user_id = call.data.split("_")[-2:]
+        user_db = db.query(models.User).filter_by(user_id=user_id)
     def generate_sessions(self, call, db):
         try:
             # Translate: "⏳ در حال تولید سانس ها برای ۳۰ روز آینده..."
@@ -501,3 +705,59 @@ class UserFlow:
 
             timer = threading.Timer(7.0, delete_message) # Increased delay slightly
             timer.start()
+    def generate_report(self, call, db):
+        try:
+            # Translate: "⏳ در حال تولید سانس ها برای ۳۰ روز آینده..."
+            generating_msg = self.bot.send_message(
+                call.message.chat.id,
+                "⏳ در حال تولید گزارش"
+            )
+        except Exception as e:
+            print(f"Error sending 'generating' message: {e}")
+            # Optionally notify admin via callback query
+            # Translate: "Error starting generation."
+            self.bot.answer_callback_query(call.id, "خطا در شروع عملیات ایجاد سانس‌ها.", show_alert=True)
+            return
+                # get user all payment and send him pdf version of exel file
+        payments = db.query(models.Payment).all()
+        if not payments:
+            self.bot.send_message(call.message.chat.id, "No payment history found.")
+            return
+        # Create a DataFrame from payment data
+        payment_data = []
+        for payment in payments:
+            # Get session details for this payment
+            session = db.query(models.Session).filter_by(id=payment.session_id).first()
+            user_db = db.query(models.User).filter_by(user_id=session.booked_user_id)
+            # Format date for better readability
+            payment_date = payment.payment_date.strftime("%Y-%m-%d %H:%M")
+            session_date = (
+                session.session_date.strftime("%Y-%m-%d") if session else "N/A"
+            )
+
+            payment_data.append(
+                {
+                    "Payment ID": payment.id,
+                    "Session Date":  Gregorian(session_date).persian_string(),
+                    "Time Slot": session.time_slot if session else "N/A",
+                    "Amount": f"{payment.amount} $",
+                    "Payment Date": Gregorian(payment_date).persian_string(),
+                    "Name": user_db.name if user_db else "N/A",
+                    "Surname": user_db.surname if user_db else "N/A",
+                    "Phone Number": user_db.phone_number if user_db else "N/A",
+                }
+            )
+
+        # Create Excel file in memory
+        output_excel = BytesIO()
+        df = pd.DataFrame(payment_data)
+        df.to_excel(output_excel, index=False)
+        output_excel.seek(0)
+
+        # Send the Excel file
+        self.bot.send_document(
+            call.message.chat.id,
+            output_excel,
+            visible_file_name=f"payment_history_{call.from_user.id}.xlsx",
+            caption="Your payment history report",
+        )

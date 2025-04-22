@@ -60,31 +60,39 @@ def callback_center(call, db: Session = Dependency(get_db)):
     if call.data.startswith("ACCOUNT_TYPE"):
         USER_FLOW.acccount_register(call)
 
-    if call.data.startswith("SESSION_DATE_"):
+    elif call.data.startswith("SESSION_DATE_"):
         USER_FLOW.session_date(call, db)
-    if call.data == "ADMIN_START":
+    elif call.data == "ADMIN_START":
         ADMIN_FLOW.start(call, bot)
-    if call.data.startswith("ADMIN_SESSION_DATE_"):
+    elif call.data == "ADMIN_CHANGE_BASED_COST":
+        ADMIN_FLOW.change_based_cost(call, db)
+    elif call.data == "ADMIN_GENERATE_REPORT":
+        ADMIN_FLOW.generate_report(call, db)
+    elif call.data.startswith("ADMIN_SESSION_DATE_"):
         ADMIN_FLOW.seesion_date(call, db)
-    if call.data.startswith("ADMIN_MANAGE_SESSION_"):
+    elif call.data.startswith("ADMIN_MANAGE_SESSION_"):
         ADMIN_FLOW.manage_session(call, db)
-    if call.data.startswith("ADMIN_SESSION_REFUND_"):
+    elif call.data.startswith("ADMIN_SESSION_REFUND_"):
         ADMIN_FLOW.session_refund(call, db)
-    if call.data.startswith("ADMIN_DEACTIVATE_SESSION_"):
+    elif call.data.startswith("ADMIN_DEACTIVATE_SESSION_"):
         ADMIN_FLOW.deactive_session(call, db)
-    if call.data.startswith("ADMIN_ACTIVATE_SESSION_"):
+    elif call.data.startswith("ADMIN_ACTIVATE_SESSION_"):
         ADMIN_FLOW.active_session(call, db)
-    if call.data.startswith("BOOK_"):
+    elif call.data.startswith("BOOK_"):
         USER_FLOW.book_session(call, db)
-    if call.data.startswith("CONFIRM_"):
+    elif call.data.startswith("CONFIRM_"):
         USER_FLOW.confirm_session(call, db)
-    if call.data == "ADMIN_VIEW_USERS_PAGE_1":
+    elif call.data.startswith("ADMIN_VIEW_USER_BOOKINGS_FROM_"):
+        ADMIN_FLOW.view_user_bookings(call, db)
+    elif call.data.startswith("ADMIN_VIEW_USER_"):
+        ADMIN_FLOW.view_user_details(call, db)
+    elif call.data.startswith("ADMIN_VIEW_USERS_PAGE_"):
         ADMIN_FLOW.view_users(call, db)
-    if call.data == "ADMIN_VIEW_SESSIONS":
+    elif call.data == "ADMIN_VIEW_SESSIONS":
         ADMIN_FLOW.view_sessions(call, db)
-    if call.data == "ADMIN_GENERATE_SESSIONS":
+    elif call.data == "ADMIN_GENERATE_SESSIONS":
         ADMIN_FLOW.generate_sessions(call, db)
-    if call.data == "REPORT_ALL_PAYMENTS":
+    elif call.data == "REPORT_ALL_PAYMENTS":
         USER_FLOW.report_all_payment(call, db)
 
 
