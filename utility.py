@@ -26,3 +26,21 @@ def convert_persian_numbers(input_text):
     for persian, english in persian_to_english.items():
         cleaned = cleaned.replace(persian, english)
     return cleaned
+
+def convert_english_numbers(input_text):
+    english_to_persian = {
+        "0": "۰",
+        "1": "۱",
+        "2": "۲",
+        "3": "۳",
+        "4": "۴",
+        "5": "۵",
+        "6": "۶",
+        "7": "۷",
+        "8": "۸",
+        "9": "۹",
+    }
+    cleaned = input_text
+    for english, persian in english_to_persian.items():
+        cleaned = cleaned.replace(english, persian)
+    return cleaned

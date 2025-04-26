@@ -1,12 +1,12 @@
 import time
 from telebot.types import (
     InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    KeyboardButton,
-    ReplyKeyboardMarkup,
+    InlineKeyboardMarkup
 )
-from constant.general import PERSIAN_DAY_NAMES, TIMESLOTS
+from sqlalchemy.orm import Session
+from constant.general import ACCOUNT_TYPE, PERSIAN_DAY_NAMES, STATUS, TIMESLOTS
 from repositories import models
+from utility import convert_english_numbers
 from utils.jalali import Gregorian
 import datetime
 from calendar import day_name
@@ -15,6 +15,8 @@ import threading
 
 import pandas as pd
 from math import ceil # Add this import
+from utils.dependency import Dependency, inject
+from repositories.utils import get_db
 
 # Define constants for pagination
 USERS_PER_PAGE = 10
@@ -22,6 +24,7 @@ USERS_PER_PAGE = 10
 class UserFlow:
     def __init__(self,bot):
         self.bot = bot
+        self.user_boarding={}
     def _get_session_or_warn(self, call, db, session_id):
         """Fetches a session by ID or sends a warning if not found."""
         session = db.query(models.Session).filter_by(id=session_id).first()
@@ -66,10 +69,10 @@ class UserFlow:
                 "تغییر هزینه سانس‌ها", callback_data="ADMIN_CHANGE_BASED_COST"
             ),
             # Translate: "User Verification"
-        )
+            )
         # Translate: "Admin Panel:"
         text = "پنل مدیریت:"
-        if first_time and message:
+        if first_time:
             mag = self.bot.send_message(message.chat.id, "در حال ورود به پنل مدیریت...", reply_markup=ReplyKeyboardRemove(selective=True))
             self.bot.delete_message(message.chat.id, mag.message_id) # Delete the message after sending
             self.bot.send_message(message.chat.id, text, reply_markup=markup)
@@ -77,14 +80,13 @@ class UserFlow:
             try:
                 self.bot.edit_message_text(
                     text,
-                    chat_id=call.message.chat.id,
                     message_id=call.message.message_id,
                     reply_markup=markup,
                 )
             except Exception as e:
                 print(f"Error editing message: {e}") # Handle potential API errors (e.g., message not modified)
         else:
-             print("Error: 'start' called without 'call' or 'message'.") # Log error case
+            self.bot.send_message(message.chat.id, text, reply_markup=markup)
 
 
     def seesion_date(self, call, db):
@@ -152,18 +154,14 @@ class UserFlow:
             booked_user = (
                 db.query(models.User).filter_by(user_id=session.booked_user_id).first()
             )
-            # Translate: "توسط ... گرفته شده است." and "توسط کاربر نامشخص گرفته شده است."
             user_info = f"توسط {booked_user.name} {booked_user.surname} رزرو شده است." if booked_user else "توسط کاربر نامشخص رزرو شده است."
             msg = f"{session_info}\n{user_info}"
             markup.add(
                 # Translate: "لغو و استرداد وجه"
-                InlineKeyboardButton(
                     "لغو رزرو و استرداد وجه", callback_data=f"ADMIN_SESSION_REFUND_{session_id}"
                 )
-            )
         else:
             msg = session_info
-            # Translate: "غیر فعال سازی" and "فعال سازی"
             action_text = "غیرفعال‌سازی" if session.available else "فعال‌سازی"
             action_callback = (
                 f"ADMIN_DEACTIVATE_SESSION_{session_id}"
@@ -171,7 +169,9 @@ class UserFlow:
                 else f"ADMIN_ACTIVATE_SESSION_{session_id}"
             )
             markup.add(
-                InlineKeyboardButton(action_text, callback_data=action_callback)
+                InlineKeyboardButton(
+                    action_text, callback_data=action_callback
+                )
             )
 
         markup.add(
@@ -259,15 +259,14 @@ class UserFlow:
         db.commit()
         db.refresh(session)
 
-        # Translate: "فعال" and "غیرفعال"
         status_text = "فعال" if available_status else "غیرفعال"
         try:
             # Translate: "سانس با موفقیت ... شد ✅"
             self.bot.edit_message_text(
-                f"سانس با موفقیت {status_text} شد ✅",
                 chat_id=call.message.chat.id,
                 message_id=call.message.message_id,
-                reply_markup=InlineKeyboardMarkup().add(
+                text=f"✅ سانس با موفقیت {status_text} شد.",
+                reply_markup=InlineKeyboardMarkup(
                     InlineKeyboardButton(
                         # Translate: "بازگشت به منو سانس ها"
                         "بازگشت به لیست سانس‌ها",
@@ -411,41 +410,17 @@ class UserFlow:
             # Optionally, answer callback query to acknowledge button press even if message doesn't change
 
     def view_user_details(self,call,db):
-
-        # try:
         id = call.data.split("_")[-1]
         page = call.data.split("_")[-2]
         user_db = db.query(models.User).filter_by(user_id=int(id)).first()
-        # except:
-        #     # Translate: "Invalid user ID."
-        #     self._send_and_delete(
-        #         call.message.chat.id,
-        #         "شناسه کاربر نامعتبر است.",
-        #         delay=2
-        #     )
-        #     return
-
-        # Add this check to ensure user_db is not None
-        # if not user_db:
-        #     # self._send_and_delete(
-        #     #     call.message.chat.id,
-        #     #     "کاربر مورد نظر یافت نشد.", # Translate: "User not found."
-        #     #     delay=3
-        #     # )
-        #     # Optionally, go back to the user list
-        #     self.view_users(call, db) # This might need adjustment based on how view_users handles call data
-        #     return
-
-        # # Added default values for potentially missing attributes
+        
         markup = InlineKeyboardMarkup()
         msg = f"*مشخصات کابر:*\n"
-        # acc_type = getattr(user_db.account_type, 'value', 'نامشخص') # Translate 'N/A'
-        # verified_status = getattr(user_db.is_verified, 'value', 'نامشخص') # Translate 'N/A'
         # Translate labels
         msg += f"👤 نام: {user_db.name or ''} {user_db.surname or ''}\n" \
-            f"📞 شماره تماس: {f'{user_db.phone_number}+' or 'ثبت نشده'}\n"
-            # f"🏷️ نوع حساب: {acc_type}\n" \
-            # f"✅ وضعیت تایید: {verified_status}\n"
+            f"📞 شماره تماس: {f'{user_db.phone_number}+' or 'ثبت نشده'}\n"\
+            f"🏷️ نوع حساب: {ACCOUNT_TYPE[user_db.account_type]}\n" \
+            f"✅ وضعیت تایید: {STATUS[user_db.is_verified]}\n"
 
         markup.add(
             InlineKeyboardButton(
@@ -508,11 +483,11 @@ class UserFlow:
         # Added default values for potentially missing attributes
         markup = InlineKeyboardMarkup()
         msg = f"*رزروهای کابر:*\n"
-        msg += f"👤 نام: {user_db.name or ''} {user_db.surname or ''}\n"
+        msg += f"نام: {user_db.name or ''} {user_db.surname or ''}\n"
 
         if not users_page:
             # Translate: "No bookings found."
-            msg += "رزروهایی یافت نشد."
+            msg += "رزروی  یافت نشد."
         else:
             # use pagination
 
@@ -567,11 +542,11 @@ class UserFlow:
         markup = InlineKeyboardMarkup()
         msg = f"*هزینه های سانس ها:*\n"
         for type_based_cost in type_based_costs:
-            msg += f"🏷️ نوع حساب: {type_based_cost.account_type.value}\n" \
-                f"💰 هزینه سانس: {type_based_cost.session_cost} تومان\n"
+            msg += f"🏷️ نوع حساب: {ACCOUNT_TYPE[type_based_cost.account_type]}\n" \
+                f"💰 هزینه سانس: {convert_english_numbers(type_based_cost.session_cost)} تومان\n"
             markup.add(
                 InlineKeyboardButton(
-                    f"تغییر هزینه {type_based_cost.account_type.value}",
+                    f"تغییر هزینه {ACCOUNT_TYPE[type_based_cost.account_type]}",
                     callback_data=f"ADMIN_CHANGE_BASED_COST_{type_based_cost.account_type.value}"
                 )
             )
@@ -597,6 +572,47 @@ class UserFlow:
             try:
                 self.bot.answer_callback_query(call.id)
             except Exception: pass
+
+    def change_cost(self,call,db):
+        account_type = call.data.split("_")[-1]
+        based_cost = db.query(models.PaymentCategory).filter_by(account_type=account_type).first()
+        msg = f"*تغییر هزینه سانس {based_cost.account_type.value}:*\n"
+        msg += f"میزان هزینه سانسس را وارد کنید."
+        message = self.bot.edit_message_text(
+                msg,
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                reply_markup=None,
+                parse_mode="Markdown"
+            )
+        self.user_boarding[call.message.chat.id] = call.message.message_id
+        self.bot.register_next_step_handler(message, self.handle_cost_change, based_cost)
+
+    @inject
+    def handle_cost_change(self,message,based_cost,db:Session=Dependency(get_db)):
+        try:
+            new_cost = int(message.text)
+            based_cost.session_cost = new_cost
+            db.commit()
+            self._send_and_delete(
+                message.chat.id,
+                "✅هزینه سانس با موفقیت تغییر یافت.",
+                5
+            )
+            for i in range(self.user_boarding[message.chat.id] , message.message_id+1):
+                self.bot.delete_message(
+                    message.chat.id,
+                    i
+                )
+            self.user_boarding.pop(message.chat.id)
+            self.start(call=None,message=message)
+        except ValueError:
+            self.bot.send_message(
+                message.chat.id,
+                "لطفا یک عدد وارد کنید."
+            )
+            self.bot.register_next_step_handler(message, self.handle_cost_change, based_cost)
+
     def user_verification(self,call,db):
         #ADMIN_VIEW_USER_VERIFICATION_FROM_{page}_{id}
         from_page,user_id = call.data.split("_")[-2:]
@@ -671,7 +687,7 @@ class UserFlow:
 
             # --- Success Message ---
             # Translate: "✅ با موفقیت ... سانس جدید برای ۳۰ روز آینده ایجاد شد."
-            final_msg = f"✅ با موفقیت {sessions_created} سانس جدید برای ۳۰ روز آینده ایجاد شد."
+            final_msg = f"✅ با موفقیت {convert_english_numbers(sessions_created)} سانس جدید برای ۳۰ روز آینده ایجاد شد."
             self.bot.edit_message_text(
                 final_msg,
                 call.message.chat.id,
@@ -700,36 +716,30 @@ class UserFlow:
                     self.bot.delete_message(call.message.chat.id, generating_msg.message_id)
                 except Exception as e:
                     # Ignore deletion errors (e.g., message already deleted)
-                    # print(f"Error deleting message: {e}")
+                    print(f"Error deleting message: {e}")
                     pass
 
             timer = threading.Timer(7.0, delete_message) # Increased delay slightly
             timer.start()
     def generate_report(self, call, db):
         try:
-            # Translate: "⏳ در حال تولید سانس ها برای ۳۰ روز آینده..."
             generating_msg = self.bot.send_message(
                 call.message.chat.id,
                 "⏳ در حال تولید گزارش"
             )
         except Exception as e:
             print(f"Error sending 'generating' message: {e}")
-            # Optionally notify admin via callback query
-            # Translate: "Error starting generation."
+
             self.bot.answer_callback_query(call.id, "خطا در شروع عملیات ایجاد سانس‌ها.", show_alert=True)
             return
-                # get user all payment and send him pdf version of exel file
         payments = db.query(models.Payment).all()
         if not payments:
             self.bot.send_message(call.message.chat.id, "No payment history found.")
             return
-        # Create a DataFrame from payment data
         payment_data = []
         for payment in payments:
-            # Get session details for this payment
             session = db.query(models.Session).filter_by(id=payment.session_id).first()
             user_db = db.query(models.User).filter_by(user_id=session.booked_user_id)
-            # Format date for better readability
             payment_date = payment.payment_date.strftime("%Y-%m-%d %H:%M")
             session_date = (
                 session.session_date.strftime("%Y-%m-%d") if session else "N/A"
@@ -737,14 +747,14 @@ class UserFlow:
 
             payment_data.append(
                 {
-                    "Payment ID": payment.id,
-                    "Session Date":  Gregorian(session_date).persian_string(),
-                    "Time Slot": session.time_slot if session else "N/A",
-                    "Amount": f"{payment.amount} $",
-                    "Payment Date": Gregorian(payment_date).persian_string(),
-                    "Name": user_db.name if user_db else "N/A",
-                    "Surname": user_db.surname if user_db else "N/A",
-                    "Phone Number": user_db.phone_number if user_db else "N/A",
+                    "تاریخ سانس":  Gregorian(session_date).persian_string(),
+                    "زمان سانس": session.time_slot if session else "N/A",
+                    "شناسه پرداخت": payment.id,
+                    "قیمت": f"{payment.amount} $",
+                    "تاریخ پرداخت": Gregorian(payment_date).persian_string(),
+                    "نام": user_db.name if user_db else "N/A",
+                    "نام خانوادگی": user_db.surname if user_db else "N/A",
+                    "شماره تماس": user_db.phone_number if user_db else "N/A",
                 }
             )
 
@@ -753,11 +763,26 @@ class UserFlow:
         df = pd.DataFrame(payment_data)
         df.to_excel(output_excel, index=False)
         output_excel.seek(0)
-
+        final_msg = f"✅ گزارش پرداخت ها با موفقیت ایجاد شد."
+        self.bot.edit_message_text(
+            final_msg,
+            call.message.chat.id,
+            generating_msg.message_id,
+        )
         # Send the Excel file
         self.bot.send_document(
             call.message.chat.id,
             output_excel,
-            visible_file_name=f"payment_history_{call.from_user.id}.xlsx",
-            caption="Your payment history report",
+            visible_file_name=f"تاریخچه پرداخت_{call.from_user.id}.xlsx",
+            caption="تاریخچه پرداخت",
         )
+        def delete_message():
+            try:
+                self.bot.delete_message(call.message.chat.id, generating_msg.message_id)
+            except Exception as e:
+                # Ignore deletion errors (e.g., message already deleted)
+                print(f"Error deleting message: {e}")
+                pass
+
+        timer = threading.Timer(7.0, delete_message) # Increased delay slightly
+        timer.start()

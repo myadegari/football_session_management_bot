@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from typing import Final
+from repositories import models
 
 @dataclass(
     frozen=True,
@@ -31,3 +32,13 @@ TIMESLOTS = [
     "19:30-21:00",
     "21:00-22:30",
 ]
+STATUS = {
+        models.VerificationStatus.VERIFIED: "🟢 تایید شده",
+        models.VerificationStatus.PENDING: "🟡 در حال بررسی",
+        models.VerificationStatus.REJECTED: "🔴 رد شده",
+}
+ACCOUNT_TYPE = {
+    models.UserType.EMPLOYEE: "👨‍💼 کارمندی",
+    models.UserType.STUDENT: "👨‍🎓 دانشجویی",
+    models.UserType.GENERAL: "🤵 عمومی",
+}
