@@ -40,7 +40,7 @@ def convert_english_numbers(input_text):
         "8": "۸",
         "9": "۹",
     }
-    cleaned = input_text
+    cleaned = str(input_text)
     for english, persian in english_to_persian.items():
         cleaned = cleaned.replace(english, persian)
     return cleaned

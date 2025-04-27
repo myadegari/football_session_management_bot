@@ -227,6 +227,10 @@ class UserFlow:
                 f"سانس انتخابی شما توسط مدیریت لغو شد. وجه پرداختی به زودی به حساب شما بازگردانده خواهد شد.\n*اطلاعات سانس*\n{session_details}",
                 parse_mode="Markdown"
             )
+            # Translate: "✅ Session cancelled and refunded."
+            self.bot.answer_callback_query(call.id, "✅ سانس لغو و استرداد وجه به کاربر اطلاع داده شد.")
+            db.query(models.Session).filter_by(id=session_id).update({"booked_user_id": None, "available": False})
+            db.commit()
         except Exception as e:
             print(f"Error sending refund notification to user {booked_user_id}: {e}")
 
@@ -614,6 +618,7 @@ class UserFlow:
             self.bot.register_next_step_handler(message, self.handle_cost_change, based_cost)
 
     def user_verification(self,call,db):
+        #TODO: add verification logic
         #ADMIN_VIEW_USER_VERIFICATION_FROM_{page}_{id}
         from_page,user_id = call.data.split("_")[-2:]
         user_db = db.query(models.User).filter_by(user_id=user_id)
