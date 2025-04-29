@@ -21,18 +21,22 @@ import threading
 
 import pandas as pd
 
+
 class UserFlow:
-    def __init__(self,bot):
+    def __init__(self, bot):
         self.bot = bot
-        self.bot.register_message_handler(self.handle_phone_number, content_types=["contact"])
+        self.bot.register_message_handler(
+            self.handle_phone_number, content_types=["contact"]
+        )
         self.user_boarding = {}
-    def start(self,message,db,admin_start):
+
+    def start(self, message, db, admin_start):
         user_id = message.from_user.id
         user_db = db.query(models.User).filter_by(user_id=user_id).first()
         if user_db:
             if user_db.role == models.UserRole.ADMIN:
                 admin_start(None, message, first_time=True)
-                
+
             elif user_db.role == models.UserRole.USER:
                 keyboard = ReplyKeyboardMarkup(
                     resize_keyboard=True,
@@ -75,7 +79,7 @@ class UserFlow:
             message.chat.id, CUSER.Messages.SELECT_ACCOUNT_TYPE, reply_markup=markup
         )
 
-    def acccount_register(self,call):
+    def acccount_register(self, call):
         user_id = call.from_user.id
         user_type = call.data.replace("ACCOUNT_TYPE_", "")
         db_user = models.User(
@@ -85,11 +89,19 @@ class UserFlow:
 
         match user_type:
             case "EMPLOYEE":
-                msg = self.bot.reply_to(call.message, CUSER.Messages.ENTER_PERSONNEL_NUMBER)
-                self.bot.register_next_step_handler(msg, self.handle_veryfication_token, db_user)
+                msg = self.bot.reply_to(
+                    call.message, CUSER.Messages.ENTER_PERSONNEL_NUMBER
+                )
+                self.bot.register_next_step_handler(
+                    msg, self.handle_veryfication_token, db_user
+                )
             case "STUDENT":
-                msg = self.bot.reply_to(call.message, CUSER.Messages.ENTER_STUDENT_NUMBER)
-                self.bot.register_next_step_handler(msg, self.handle_veryfication_token, db_user)
+                msg = self.bot.reply_to(
+                    call.message, CUSER.Messages.ENTER_STUDENT_NUMBER
+                )
+                self.bot.register_next_step_handler(
+                    msg, self.handle_veryfication_token, db_user
+                )
             case "GENERAL":
                 db_user.veryfication_token = None
                 # user_onboarding_state[user_id]["veryfication_token"] = None
@@ -97,8 +109,8 @@ class UserFlow:
                 self.bot.register_next_step_handler(msg, self.handle_name, db_user)
             case _:
                 raise ValueError("Invalid account type selected")
-    
-    def handle_veryfication_token(self,message, db_user: models.User):
+
+    def handle_veryfication_token(self, message, db_user: models.User):
         if db_user.user_id == message.from_user.id:
             try:
                 input_text = message.text.strip()
@@ -107,7 +119,9 @@ class UserFlow:
                 cleaned = re.sub(r"\D+", "", cleaned.strip(), flags=re.UNICODE)
                 if not cleaned:
                     msg = self.bot.reply_to(message, CUSER.Messages.INVALID_NUMBER)
-                    self.bot.register_next_step_handler(msg, self.handle_veryfication_token)
+                    self.bot.register_next_step_handler(
+                        msg, self.handle_veryfication_token
+                    )
                     return
 
                 db_user.veryfication_token = cleaned
@@ -117,11 +131,12 @@ class UserFlow:
                 raise ValueError("Invalid input. Please enter a valid number.")
         return
 
-
-    def handle_name(self,message, db_user: models.User):
+    def handle_name(self, message, db_user: models.User):
         if db_user.user_id == message.from_user.id:
             try:
-                cleaned = re.sub(r"[0-9\W_]+", " ", message.text.strip(), flags=re.UNICODE)
+                cleaned = re.sub(
+                    r"[0-9\W_]+", " ", message.text.strip(), flags=re.UNICODE
+                )
                 cleaned = re.sub(r"\s+", " ", cleaned).strip()
                 if not cleaned:
                     msg = self.bot.reply_to(message, CUSER.Messages.INVALID_NAME)
@@ -134,16 +149,21 @@ class UserFlow:
                 raise ValueError("Invalid input. Please enter a valid name.")
         return
 
-
     @inject
-    def handle_surname(self,message, db_user: models.User, db: Session = Dependency(get_db)):
+    def handle_surname(
+        self, message, db_user: models.User, db: Session = Dependency(get_db)
+    ):
         if db_user.user_id == message.from_user.id:
             try:
-                cleaned = re.sub(r"[0-9\W_]+", " ", message.text.strip(), flags=re.UNICODE)
+                cleaned = re.sub(
+                    r"[0-9\W_]+", " ", message.text.strip(), flags=re.UNICODE
+                )
                 cleaned = re.sub(r"\s+", " ", cleaned).strip()
                 if not cleaned:
                     msg = self.bot.reply_to(message, CUSER.Messages.INVALID_SURNAME)
-                    self.bot.register_next_step_handler(msg, self.handle_surname, db_user)
+                    self.bot.register_next_step_handler(
+                        msg, self.handle_surname, db_user
+                    )
                     return
                 db_user.surname = cleaned
                 keyboard = ReplyKeyboardMarkup(
@@ -159,8 +179,9 @@ class UserFlow:
         return
 
         # self.bot.register_next_step_handler(msg, handle_phone_number)
+
     @inject
-    def handle_phone_number(self,message, db=Dependency(get_db)):
+    def handle_phone_number(self, message, db=Dependency(get_db)):
         user_db = db.query(models.User).filter_by(user_id=message.from_user.id).first()
         if not user_db:
             self.bot.send_message(
@@ -192,7 +213,9 @@ class UserFlow:
             )
             for button in buttons:
                 keyboard.add(button)
-            self.bot.send_message(message.from_user.id, CUSER.Messages.SUCCESSFUL_REGISTRATION)
+            self.bot.send_message(
+                message.from_user.id, CUSER.Messages.SUCCESSFUL_REGISTRATION
+            )
             self.bot.send_message(
                 message.from_user.id,
                 CUSER.Messages.WELLCOME_BACK,
@@ -205,7 +228,7 @@ class UserFlow:
                     self.bot.delete_message(message.chat.id, i)
                 self.user_boarding.pop(message.from_user.id, None)
 
-    def session_date(self,call,db):
+    def session_date(self, call, db):
         date_str = call.data.split("_")[-1]
         date = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
         sessions = (
@@ -218,16 +241,21 @@ class UserFlow:
             if s.available:
                 btn_text = f"{s.time_slot} — رزرو کن"
                 keyboard.add(
-                    InlineKeyboardButton(btn_text, callback_data=f"BOOK_{s.id}")
+                    InlineKeyboardButton(
+                        btn_text, callback_data=f"BOOK_{date_str}_{s.id}"
+                    )
                 )
+        keyboard.add(InlineKeyboardButton("بازگشت", callback_data="SHOW_SESSIONS"))
         self.bot.edit_message_text(
             msg,
             chat_id=call.message.chat.id,
             message_id=call.message.message_id,
             reply_markup=keyboard,
         )
-    def book_session(self,call,db):
-        session_id = int(call.data.split("_")[1])
+
+    def book_session(self, call, db):
+        session_id = int(call.data.split("_")[-1])
+        date_str = call.data.split("_")[-2]
         session = db.query(models.Session).filter_by(id=session_id).first()
         if not session:
             self.bot.answer_callback_query(
@@ -248,16 +276,22 @@ class UserFlow:
         markup = InlineKeyboardMarkup()
         markup.add(
             InlineKeyboardButton(
-                f"Confirm Booking (${cost})", callback_data=f"CONFIRM_{session_id}"
-            )
+                "تایید و پرداخت", callback_data=f"CONFIRM_{session_id}"
+            ),
+            InlineKeyboardButton(
+                "بازگشت به پنل سانس ها", callback_data=f"SESSION_DATE_{date_str}"
+            ),
         )
+        day_name_en = day_name[session.session_date.weekday()]
+        day_name_fa = PERSIAN_DAY_NAMES.get(day_name_en, day_name_en)
         self.bot.edit_message_text(
-            f"Session: {Gregorian(session.session_date).persian_string()} {session.time_slot}\nCost: ${cost}\nDo you want to book this session?",
+            f"اطلاعات سانس انتخابی روز {day_name_fa}:\n{Gregorian(session.session_date).persian_string()} {session.time_slot}\nمبلغ: {cost}تومان\nمی‌خواهید این سانس را رزرو کنید؟",
             chat_id=call.message.chat.id,
             message_id=call.message.message_id,
             reply_markup=markup,
         )
-    def confirm_session(self,call,db):
+
+    def confirm_session(self, call, db):
         session_id = int(call.data.split("_")[1])
         session = db.query(models.Session).filter_by(id=session_id).first()
         if not session:
@@ -291,7 +325,8 @@ class UserFlow:
             chat_id=call.message.chat.id,
             message_id=call.message.message_id,
         )
-    def report_all_payment(self,call,db):
+
+    def report_all_payment(self, call, db):
         # get user all payment and send him pdf version of exel file
         payments = db.query(models.Payment).filter_by(user_id=call.from_user.id).all()
         if not payments:
@@ -332,11 +367,22 @@ class UserFlow:
             visible_file_name=f"payment_history_{call.from_user.id}.xlsx",
             caption="Your payment history report",
         )
-    def show_sessions(self,message,db):
-        user_id = message.from_user.id
+
+    def show_sessions(self, message, db, call=None):
+        user_id = call.from_user.id if call else message.from_user.id
         user_db = db.query(models.User).filter_by(user_id=user_id).first()
         if not user_db:
-            self.bot.send_message(message.chat.id, "You need to register first. Use /start.")
+            if call:
+                self.bot.edit_message_text(
+                    "برای استفاده از ربات باید ابتدا ثبت نام کنید. برای ثبت نام از دستور /start استفاده کنید.",
+                    chat_id=call.message.chat.id,
+                    message_id=call.message.message_id,
+                )
+            else:
+                self.bot.send_message(
+                    message.chat.id,
+                    "برای استفاده از ربات باید ابتدا ثبت نام کنید. برای ثبت نام از دستور /start استفاده کنید.",
+                )
             return
         today = datetime.date.today()
         dates = [today + datetime.timedelta(days=i) for i in range(3)]
@@ -346,9 +392,16 @@ class UserFlow:
             .all()
         )
         if not sessions:
-            self.bot.send_message(
-                message.chat.id, "No sessions available for the next 3 days."
-            )
+            if call:
+                self.bot.edit_message_text(
+                    "برای سه روز آینده سانسی برای زمین وجود ندارد",
+                    chat_id=call.message.chat.id,
+                    message_id=call.message.message_id,
+                )
+            else:
+                self.bot.send_message(
+                    message.chat.id, "برای سه روز آینده سانسی برای زمین وجود ندارد"
+                )
             return
         sessions_by_date = {}
         for s in sessions:
@@ -371,10 +424,18 @@ class UserFlow:
                     f"{day_name_fa}", callback_data=f"SESSION_DATE_{date}"
                 )
             )
-
-        self.bot.send_message(message.chat.id, msg, reply_markup=keyboard)
+        if call:
+            self.bot.edit_message_text(
+                msg,
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                reply_markup=keyboard,
+            )
+        else:
+            self.bot.send_message(message.chat.id, msg, reply_markup=keyboard)
         return
-    def show_profile(self,message,db):
+
+    def show_profile(self, message, db):
         user_db = db.query(models.User).filter_by(user_id=message.from_user.id).first()
         if not user_db:
             self.bot.send_message(
@@ -403,11 +464,14 @@ class UserFlow:
         )
         self.bot.send_message(message.chat.id, msg, parse_mode="Markdown")
         return
-    def payment_history(self,message,db):
+
+    def payment_history(self, message, db):
         user_id = message.from_user.id
         user_db = db.query(models.User).filter_by(user_id=user_id).first()
         if not user_db:
-            self.bot.send_message(message.chat.id, "You need to register first. Use /start.")
+            self.bot.send_message(
+                message.chat.id, "You need to register first. Use /start."
+            )
             return
         payments = db.query(models.Payment).filter_by(user_id=user_id).first()
         if not payments:

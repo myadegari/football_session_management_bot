@@ -56,7 +56,7 @@ class PaymentCategory(Base):
     __tablename__ = "payment_categories"
     id = Column(Integer, primary_key=True, autoincrement=True)
     account_type = Column(Enum(UserType), nullable=False)
-    session_cost = Column(DECIMAL(10), nullable=False)
+    session_cost = Column(Integer, nullable=False)
 
 
 class Session(Base):
@@ -66,7 +66,7 @@ class Session(Base):
     time_slot = Column(String(20), nullable=False)
     available = Column(Boolean, default=True)
     booked_user_id = Column(Integer, ForeignKey("users.user_id"))
-    cost = Column(DECIMAL(10), nullable=False)
+    cost = Column(Integer, nullable=False)
     user = relationship(
         "User", back_populates="sessions", foreign_keys=[booked_user_id]
     )
@@ -81,7 +81,7 @@ class Payment(Base):
     user_id = Column(Integer, ForeignKey("users.user_id"), nullable=False)
     session_id = Column(Integer, ForeignKey("sessions.id"), nullable=False)
     payment_date = Column(DateTime, nullable=False)
-    amount = Column(DECIMAL(10), nullable=False)
+    amount = Column(Integer, nullable=False)
     verified = Column(Boolean, default=False)
     user = relationship("User", back_populates="payments", foreign_keys=[user_id])
     session = relationship(

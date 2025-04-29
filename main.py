@@ -62,8 +62,10 @@ def callback_center(call, db: Session = Dependency(get_db)):
 
     elif call.data.startswith("SESSION_DATE_"):
         USER_FLOW.session_date(call, db)
+    elif call.data == "SHOW_SESSIONS":
+        USER_FLOW.show_sessions(None,db,call)
     elif call.data == "ADMIN_START":
-        ADMIN_FLOW.start(call, bot)
+        ADMIN_FLOW.start(call)
     elif call.data == "ADMIN_CHANGE_BASED_COST":
         ADMIN_FLOW.change_based_cost(call, db)
     elif call.data == "ADMIN_GENERATE_REPORT":
