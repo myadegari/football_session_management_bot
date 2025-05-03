@@ -32,6 +32,7 @@ class VerificationStatus(enum.Enum):
     PENDING = "PENDING"
     VERIFIED = "VERIFIED"
     REJECTED = "REJECTED"
+    REFUNDED = "REFUNDED"
 
 class User(Base):
     __tablename__ = "users"
@@ -40,6 +41,7 @@ class User(Base):
     surname = Column(String(100), nullable=False)
     phone_number = Column(String(20))
     account_type = Column(Enum(UserType), nullable=False, default=UserType.GENERAL)
+    card_number = Column(String(16), nullable=False)
     is_active = Column(Boolean, default=True)
     is_verified = Column(Enum(VerificationStatus), nullable=False, default=VerificationStatus.REJECTED)
     role = Column(Enum(UserRole), nullable=False, default=UserRole.USER)
@@ -82,7 +84,9 @@ class Payment(Base):
     session_id = Column(Integer, ForeignKey("sessions.id"), nullable=False)
     payment_date = Column(DateTime, nullable=False)
     amount = Column(Integer, nullable=False)
-    verified = Column(Boolean, default=False)
+    shipping_option_id = Column(String(255), nullable=True)
+    comment = Column(String(255), nullable=True)
+    verified = Column(Enum(VerificationStatus), nullable=False, default=VerificationStatus.REJECTED)
     user = relationship("User", back_populates="payments", foreign_keys=[user_id])
     session = relationship(
         "Session", back_populates="payments", foreign_keys=[session_id]

@@ -8,15 +8,15 @@ from typing import Dict, Final
 class Buttons:
     EMPLOYEE = {
         "TEXT": "کارمند",
-        "CALLBACK_DATA": "ACCOUNT_TYPE_EMPLOYEE",
+        "CALLBACK_DATA": "ACCOUNT_TYPE:EMPLOYEE",
     }
     STUDENT = {
         "TEXT": "دانشجو",
-        "CALLBACK_DATA": "ACCOUNT_TYPE_STUDENT",
+        "CALLBACK_DATA": "ACCOUNT_TYPE:STUDENT",
     }
     GENERAL = {
         "TEXT": "عمومی",
-        "CALLBACK_DATA": "ACCOUNT_TYPE_GENERAL",
+        "CALLBACK_DATA": "ACCOUNT_TYPE:GENERAL",
     }
     SHEAR = "اشتراک گذاری شماره تلفن"
     SHOW_SESSIONS = "مشاهده سانس ها"
@@ -36,3 +36,7 @@ class Messages:
     SHEAR_YOUR_NUMBER = "شماره خود را با کلیک بر روی دکمه زیر به اشتراک بگذارید."
     SUCCESSFUL_REGISTRATION = "ثبت نام با موفقیت انجام شد."
     WELLCOME_BACK = "خوش آمدید!"
+    ENTER_CARD_NUMBER = "لطفا شماره کارت خود را وارد کنید."
+    INVALID_SURNAME = "نام خانوادگی نامعتبر است."
+    INVALID_NAME = "نام نامعتبر است."
+    INVALID_CARD_NUMBER = "شماره کارت نامعتبر است."

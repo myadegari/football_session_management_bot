@@ -1,25 +1,32 @@
+import datetime
+import re
+import threading
+from calendar import day_name
+from io import BytesIO
+from tkinter import E
+
+import pandas as pd
+from sqlalchemy.orm import Session
 from telebot.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     KeyboardButton,
+    LabeledPrice,
     ReplyKeyboardMarkup,
 )
+
+from constant import user as CUSER
 from constant.general import PERSIAN_DAY_NAMES, TIMESLOTS
 from repositories import models
-from utility import convert_persian_numbers
-from utils.jalali import Gregorian
-import datetime
-from calendar import day_name
-import threading
-from constant import user as CUSER
-from utils.dependency import Dependency, inject
 from repositories.utils import get_db
-import re
-from sqlalchemy.orm import Session
-from io import BytesIO
-import threading
-
-import pandas as pd
+from utility import (
+    convert_english_numbers,
+    convert_persian_numbers,
+    decode_json,
+    encode_json,
+)
+from utils.dependency import Dependency, inject
+from utils.jalali import Gregorian
 
 
 class UserFlow:
@@ -27,6 +34,13 @@ class UserFlow:
         self.bot = bot
         self.bot.register_message_handler(
             self.handle_phone_number, content_types=["contact"]
+        )
+        self.bot.register_message_handler(
+            self.verify_payment, content_types=["successful_payment"]
+        )
+        self.bot.register_pre_checkout_query_handler(
+            func=lambda query: True,
+            callback=lambda query: self.pre_checkout_query(query),
         )
         self.user_boarding = {}
 
@@ -79,9 +93,10 @@ class UserFlow:
             message.chat.id, CUSER.Messages.SELECT_ACCOUNT_TYPE, reply_markup=markup
         )
 
-    def acccount_register(self, call):
+    @inject
+    def acccount_register(self, call, db: Session = Dependency(get_db)):
         user_id = call.from_user.id
-        user_type = call.data.replace("ACCOUNT_TYPE_", "")
+        user_type = call.data.split(":")[-1]
         db_user = models.User(
             user_id=user_id,
             account_type=models.UserType[user_type],
@@ -104,11 +119,11 @@ class UserFlow:
                 )
             case "GENERAL":
                 db_user.veryfication_token = None
-                # user_onboarding_state[user_id]["veryfication_token"] = None
+                db_user.is_verified = models.VerificationStatus.VERIFIED
                 msg = self.bot.reply_to(call.message, CUSER.Messages.ENTER_YOUR_NAME)
                 self.bot.register_next_step_handler(msg, self.handle_name, db_user)
             case _:
-                raise ValueError("Invalid account type selected")
+                self.start(call.message, db, None)
 
     def handle_veryfication_token(self, message, db_user: models.User):
         if db_user.user_id == message.from_user.id:
@@ -128,7 +143,7 @@ class UserFlow:
                 msg = self.bot.reply_to(message, CUSER.Messages.ENTER_YOUR_NAME)
                 self.bot.register_next_step_handler(msg, self.handle_name, db_user)
             except:
-                raise ValueError("Invalid input. Please enter a valid number.")
+                self.acccount_register(message)
         return
 
     def handle_name(self, message, db_user: models.User):
@@ -146,7 +161,8 @@ class UserFlow:
                 msg = self.bot.reply_to(message, CUSER.Messages.ENTER_YOUR_SURNAME)
                 self.bot.register_next_step_handler(msg, self.handle_surname, db_user)
             except:
-                raise ValueError("Invalid input. Please enter a valid name.")
+                # raise ValueError("Invalid input. Please enter a valid name.")
+                self.acccount_register(message)
         return
 
     @inject
@@ -166,19 +182,37 @@ class UserFlow:
                     )
                     return
                 db_user.surname = cleaned
+                msg = self.bot.reply_to(message, CUSER.Messages.ENTER_CARD_NUMBER)
+                self.bot.register_next_step_handler(msg, self.handle_card_number, db_user)
+
+            except:
+                self.acccount_register(message)
+                # raise ValueError("Invalid input. Please enter a valid surname.")
+        return
+
+        # self.bot.register_next_step_handler(msg, handle_phone_number)
+    @inject
+    def handle_card_number(self,message, db_user: models.User,db: Session = Dependency(get_db)):
+        if db_user.user_id == message.from_user.id:
+            try:
+                cleaned = re.sub(r"\D+", "", message.text.strip(),flags=re.UNICODE)
+                cleaned = convert_persian_numbers(cleaned)
+                if not cleaned or len(cleaned) != 16:
+                    msg = self.bot.reply_to(message, CUSER.Messages.INVALID_CARD_NUMBER)
+                    self.bot.register_next_step_handler(msg, self.handle_card_number, db_user)
+                    return
+                db_user.card_number = cleaned
+                db.add(db_user)
+                db.commit()
                 keyboard = ReplyKeyboardMarkup(
                     resize_keyboard=True, one_time_keyboard=True
                 ).add(KeyboardButton(CUSER.Buttons.SHEAR, request_contact=True))
                 msg = self.bot.reply_to(
                     message, CUSER.Messages.SHEAR_YOUR_NUMBER, reply_markup=keyboard
                 )
-                db.add(db_user)
-                db.commit()
-            except:
-                raise ValueError("Invalid input. Please enter a valid surname.")
+            except Exception as e:
+              raise Exception(f"Error in handle_card_number: {e}")  
         return
-
-        # self.bot.register_next_step_handler(msg, handle_phone_number)
 
     @inject
     def handle_phone_number(self, message, db=Dependency(get_db)):
@@ -194,11 +228,11 @@ class UserFlow:
         elif all(user_db.name and user_db.surname) and not user_db.phone_number:
             user_db.phone_number = message.contact.phone_number
             user_db.is_active = True
-            user_db.is_verified = (
-                models.VerificationStatus.VERIFIED
-                if user_db.account_type == "GENERAL"
-                else models.VerificationStatus.PENDING
-            )
+            if user_db.account_type == models.UserType.GENERAL:
+                user_db.is_verified = models.VerificationStatus.VERIFIED
+            else:
+                user_db.is_verified = models.VerificationStatus.PENDING
+           
             db.commit()
             db.refresh(user_db)
 
@@ -229,7 +263,7 @@ class UserFlow:
                 self.user_boarding.pop(message.from_user.id, None)
 
     def session_date(self, call, db):
-        date_str = call.data.split("_")[-1]
+        date_str = call.data.split(":")[-1]
         date = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
         sessions = (
             db.query(models.Session).filter(models.Session.session_date == date).all()
@@ -240,9 +274,13 @@ class UserFlow:
         for s in sessions:
             if s.available:
                 btn_text = f"{s.time_slot} — رزرو کن"
+                callback_data = encode_json({
+                    "session_id": s.id,
+                    "session_date": date_str,
+                })
                 keyboard.add(
                     InlineKeyboardButton(
-                        btn_text, callback_data=f"BOOK_{date_str}_{s.id}"
+                        btn_text, callback_data=f"BOOK:{callback_data}"
                     )
                 )
         keyboard.add(InlineKeyboardButton("بازگشت", callback_data="SHOW_SESSIONS"))
@@ -254,9 +292,10 @@ class UserFlow:
         )
 
     def book_session(self, call, db):
-        session_id = int(call.data.split("_")[-1])
-        date_str = call.data.split("_")[-2]
-        session = db.query(models.Session).filter_by(id=session_id).first()
+        recive_data = call.data.split(":")[-1]
+        decoded_data = decode_json(recive_data)
+        
+        session = db.query(models.Session).filter_by(id=decoded_data.get("session_id")).first()
         if not session:
             self.bot.answer_callback_query(
                 call.id, "This session is no longer available.", show_alert=True
@@ -276,10 +315,10 @@ class UserFlow:
         markup = InlineKeyboardMarkup()
         markup.add(
             InlineKeyboardButton(
-                "تایید و پرداخت", callback_data=f"CONFIRM_{session_id}"
+                "تایید و پرداخت", callback_data=f"PAYMENT:{decoded_data.get('session_id')}"
             ),
             InlineKeyboardButton(
-                "بازگشت به پنل سانس ها", callback_data=f"SESSION_DATE_{date_str}"
+                "بازگشت به پنل سانس ها", callback_data=f"SESSION_DATE:{decoded_data.get('session_date')}"
             ),
         )
         day_name_en = day_name[session.session_date.weekday()]
@@ -291,42 +330,104 @@ class UserFlow:
             reply_markup=markup,
         )
 
-    def confirm_session(self, call, db):
-        session_id = int(call.data.split("_")[1])
+    def start_payment(self, call, db):
+        session_id = int(call.data.split(":")[-1])
         session = db.query(models.Session).filter_by(id=session_id).first()
-        if not session:
+        if session and session.available:
+            # Check if the user is verified
+            user = db.query(models.User).filter_by(user_id=call.from_user.id).first()
+            if user.is_verified == models.VerificationStatus.VERIFIED:
+                cost = int(
+                    db.query(models.PaymentCategory)
+                    .filter_by(account_type=user.account_type)
+                    .first()
+                    .session_cost
+                )
+            else:
+                cost = int(session.cost)
+
+            # Create payment record
+            payment = models.Payment(
+                user_id=call.from_user.id,
+                session_id=session_id,
+                amount=cost,
+                payment_date=datetime.datetime.now(),
+            )
+            db.add(payment)
+            session.available = False
+            session.booked_user_id = call.from_user.id
+            db.commit()
+
+            # Send invoice to the user (this is a placeholder, actual implementation may vary)
+            admin_card_number = db.query(models.User).filter_by(role=models.UserRole.ADMIN).first().card_number
+            self.bot.send_invoice(
+                call.from_user.id,
+                title="پرداخت هزینه سانس",
+                description=f"سانس: {Gregorian(session.session_date).persian_string()} {session.time_slot}",
+                provider_token=admin_card_number,
+                prices=[
+                    LabeledPrice(label="هزینه سانس", amount=cost * 10)  # Amount in IRR
+                ],
+                currency="IRR",
+                invoice_payload=str(payment.id),
+            )
+        else:
             self.bot.answer_callback_query(
                 call.id, "This session is no longer available.", show_alert=True
             )
-            return
-        user = db.query(models.User).filter_by(user_id=call.from_user.id).first()
-        if user.is_verified == models.VerificationStatus.VERIFIED:
-            cost = int(
-                db.query(models.PaymentCategory)
-                .filter_by(account_type=user.account_type)
-                .first()
-                .session_cost
+
+    @inject
+    def pre_checkout_query(self, pre_checkout_query, db: Session = Dependency(get_db)):
+        # Always accept pre-checkout queries for now
+        # You can add validation logic here if needed
+        try:
+            # Get payment details from payload
+            payment_id = pre_checkout_query.invoice_payload
+            payment = db.query(models.Payment).filter_by(id=payment_id).first()
+
+            if payment:
+                # Accept the pre-checkout query
+                payment.verified = models.VerificationStatus.PENDING
+                db.commit()
+                db.refresh(payment)
+                self.bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
+            else:
+                # Reject if payment not found
+                self.bot.answer_pre_checkout_query(
+                    pre_checkout_query.id,
+                    ok=False,
+                    error_message="Payment record not found. Please try again.",
+                )
+        except Exception as e:
+            # Log the error and reject the query
+            print(f"Error in pre_checkout_query: {e}")
+            self.bot.answer_pre_checkout_query(
+                pre_checkout_query.id,
+                ok=False,
+                error_message="An error occurred during payment processing. Please try again.",
             )
-        else:
-            cost = int(session.cost)
-        # Create payment record
-        payment = models.Payment(
-            user_id=call.from_user.id,
-            session_id=session_id,
-            amount=cost,
-            payment_date=datetime.datetime.now(),
-        )
-        db.add(payment)
-        session.available = False
-        session.booked_user_id = call.from_user.id
-        db.commit()
-        self.bot.edit_message_text(
-            f"✅ Session booked successfully!\nSession: {Gregorian(session.session_date).persian_string()} {session.time_slot}",
-            chat_id=call.message.chat.id,
-            message_id=call.message.message_id,
-        )
+
+    @inject
+    def verify_payment(self, message, db: Session = Dependency(get_db)):
+        # Get payment details from payload
+        payment_id = message.successful_payment.invoice_payload
+        payment = db.query(models.Payment).filter_by(id=payment_id).first()
+        if payment:
+            # Update payment status
+            payment.verified = models.VerificationStatus.VERIFIED
+            payment.shipping_option_id = message.successful_payment.shipping_option_id
+
+            db.commit()
+            db.refresh(payment)
+            self.bot.send_message(
+                payment.user_id, "پرداخت با موفقیت انجام و سانس با موفقیت رزرو شد."
+            )
 
     def report_all_payment(self, call, db):
+        generating_msg = self.bot.send_message(
+                call.message.chat.id,
+                "⏳ در حال ایجاد سانس‌ها برای ۳۰ روز آینده...",
+            )
         # get user all payment and send him pdf version of exel file
         payments = db.query(models.Payment).filter_by(user_id=call.from_user.id).all()
         if not payments:
@@ -339,18 +440,15 @@ class UserFlow:
             session = db.query(models.Session).filter_by(id=payment.session_id).first()
 
             # Format date for better readability
-            payment_date = payment.payment_date.strftime("%Y-%m-%d %H:%M")
-            session_date = (
-                session.session_date.strftime("%Y-%m-%d") if session else "N/A"
-            )
-
+            payment_date = payment.payment_date.date()
+            persian_amount = convert_english_numbers(payment.amount)
             payment_data.append(
                 {
-                    "Payment ID": payment.id,
-                    "Session Date": session_date,
-                    "Time Slot": session.time_slot if session else "N/A",
-                    "Amount": f"{payment.amount} $",
-                    "Payment Date": payment_date,
+                    "شماره پیگیری": payment.shipping_option_id,
+                    "تاریخ پرداخت": Gregorian(payment_date).persian_string(),
+                    "تاریخ سانس": Gregorian(session.session_date).persian_string(),
+                    "زمان سانس": session.time_slot if session else "N/A",
+                    "مبلغ پرداختی": f"{persian_amount}تومان",
                 }
             )
 
@@ -361,12 +459,98 @@ class UserFlow:
         output_excel.seek(0)
 
         # Send the Excel file
+        file_date = Gregorian(datetime.datetime.now().date()).persian_string()
+        final_msg = f"✅ گزارش با موفقیت ایجاد شد"
+        self.bot.edit_message_text(
+            final_msg,
+            call.message.chat.id,
+            generating_msg.message_id,
+        )
         self.bot.send_document(
             call.message.chat.id,
             output_excel,
-            visible_file_name=f"payment_history_{call.from_user.id}.xlsx",
-            caption="Your payment history report",
+            visible_file_name=f"تاریخچه پرداخت [{file_date}].xlsx",
+            caption="تاریخچه پرداخت های شما",
         )
+        def delete_message():
+                try:
+                    self.bot.delete_message(
+                        call.message.chat.id, generating_msg.message_id
+                    )
+                except Exception as e:
+                    # Ignore deletion errors (e.g., message already deleted)
+                    print(f"Error deleting message: {e}")
+                    pass
+
+        timer = threading.Timer(7.0, delete_message)  # Increased delay slightly
+        timer.start()
+
+    def resent_payments(self, call, db):
+        # get user three resent payment
+        payments = (
+            db.query(models.Payment)
+            .filter_by(user_id=call.from_user.id)
+            .order_by(models.Payment.payment_date.desc())
+            .limit(3)
+            .all()
+        )
+        msg = "سه پرداخت اخیر شما\n"
+        buttons = InlineKeyboardMarkup()
+        if payments:
+            for payment in payments:
+                buttons.add(
+                    InlineKeyboardButton(
+                        f"شماره پیگیری: {payment.shipping_option_id}",
+                        callback_data=f"RESENT_PAYMENT:{payment.id}",
+                    )
+                )
+        else:
+            msg += "پرداختی یافت نشد"
+        buttons.add(InlineKeyboardButton("بازگشت", callback_data="PAYMENT_HISTORY"))
+        self.bot.edit_message_text(
+            msg,
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            reply_markup=buttons,
+        )
+        return
+    def payment_details(self,call,db):
+        payment_id = call.data.split(":")[-1]
+        payment = db.query(models.Payment).filter_by(id=payment_id).first()
+        if not payment:
+            self.bot.answer_callback_query(
+                call.id, "This payment is no longer available.", show_alert=True
+            )
+            return
+        session = db.query(models.Session).filter_by(id=payment.session_id).first()
+        if not session:
+            self.bot.answer_callback_query(
+                call.id, "This session is no longer available.", show_alert=True
+            )
+            return
+        # print(type(payment.payment_date))
+        payment_date =Gregorian(payment.payment_date.date()).persian_string()
+        session_date = Gregorian(session.session_date).persian_string()
+        amount = convert_english_numbers(payment.amount)
+        msg = "جزئیات پرداخت\n"
+        msg += f"شماره پیگیری: {payment.shipping_option_id}\n"
+        msg += f"تاریخ پرداخت: {payment_date}\n"
+        msg += f"تاریخ سانس: {session_date}\n"
+        msg += f"زمان سانس: {session.time_slot}\n"
+        msg += f"مبلغ پرداختی: {amount} تومان"
+        buttons = InlineKeyboardMarkup()
+        buttons.add(
+            InlineKeyboardButton(
+                "بازگشت", callback_data="REPORT_RECENT_PAYMENTS"
+            )
+        )
+        self.bot.edit_message_text(
+            msg,
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            reply_markup=buttons
+            )
+   
 
     def show_sessions(self, message, db, call=None):
         user_id = call.from_user.id if call else message.from_user.id
@@ -421,9 +605,14 @@ class UserFlow:
             # Add day header
             keyboard.row(
                 InlineKeyboardButton(
-                    f"{day_name_fa}", callback_data=f"SESSION_DATE_{date}"
+                    f"{day_name_fa}", callback_data=f"SESSION_DATE:{date}"
                 )
             )
+        keyboard.add(
+            InlineKeyboardButton(
+                "🔃 بازنشانی", callback_data="SHOW_SESSIONS"
+            )
+        )
         if call:
             self.bot.edit_message_text(
                 msg,
@@ -465,17 +654,24 @@ class UserFlow:
         self.bot.send_message(message.chat.id, msg, parse_mode="Markdown")
         return
 
-    def payment_history(self, message, db):
-        user_id = message.from_user.id
+    def payment_history(self, message, db,call=None):
+        if call:
+            user_id = call.from_user.id
+            message_id = call.message.message_id
+            chat_id = call.message.chat.id
+        else:
+            user_id = message.from_user.id
+            message_id = message.message_id
+            chat_id = message.chat.id
         user_db = db.query(models.User).filter_by(user_id=user_id).first()
         if not user_db:
             self.bot.send_message(
-                message.chat.id, "You need to register first. Use /start."
+                chat_id, "You need to register first. Use /start."
             )
             return
         payments = db.query(models.Payment).filter_by(user_id=user_id).first()
         if not payments:
-            self.bot.send_message(message.chat.id, "No payment history found.")
+            self.bot.send_message(chat_id, "تاریخچه پرداختی برای شما وجود ندارد")
             return
         msg = "*تاریخچه پرداخت*\n"
         keyboard = InlineKeyboardMarkup()
@@ -489,13 +685,13 @@ class UserFlow:
                 "گزارش تمام تراکنش ها", callback_data="REPORT_ALL_PAYMENTS"
             )
         )
-        self.bot.send_message(message.chat.id, msg, reply_markup=keyboard)
-        # for p in payments:
-        #     session = db.query(models.Session).filter_by(id=p.session_id).first()
-        #     msg += (
-        #         f"سانس: {Gregorian(session.session_date).persian_string()} {session.time_slot}\n"
-        #         f"مبلغ: ${p.amount}\n"
-        #         f"تاریخ پرداخت: {p.payment_date}\n\n"
-        #     )
-        # bot.send_message(message.chat.id, msg, parse_mode="Markdown")
+        if call:
+            self.bot.edit_message_text(
+                msg,
+                chat_id=chat_id,
+                message_id=message_id,
+                reply_markup=keyboard,
+            )
+        else:
+            self.bot.send_message(chat_id, msg, reply_markup=keyboard)
         return

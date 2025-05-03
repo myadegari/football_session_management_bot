@@ -1,3 +1,8 @@
+import json
+import zlib
+import base64
+
+
 def convert_persian_numbers(input_text):
     persian_to_english = {
         "۰": "0",
@@ -44,3 +49,16 @@ def convert_english_numbers(input_text):
     for english, persian in english_to_persian.items():
         cleaned = cleaned.replace(english, persian)
     return cleaned
+
+# Encode: JSON → string → bytes → compressed → base64
+def encode_json(data):
+    json_str = json.dumps(data)
+    compressed = zlib.compress(json_str.encode('utf-8'))
+    encoded = base64.urlsafe_b64encode(compressed).decode('utf-8')
+    return encoded
+
+# Decode: base64 → compressed → bytes → string → JSON
+def decode_json(encoded_str):
+    compressed = base64.urlsafe_b64decode(encoded_str.encode('utf-8'))
+    json_str = zlib.decompress(compressed).decode('utf-8')
+    return json.loads(json_str)

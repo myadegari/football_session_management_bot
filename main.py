@@ -4,13 +4,14 @@ import pathlib
 import telebot
 from dotenv import load_dotenv
 from sqlalchemy.orm import Session
+from telebot import types
+
 from constant import user as CUSER
 from repositories import models
 from repositories.database import engine
-
 from repositories.utils import get_db
-from utils.dependency import Dependency, inject
 from user_flow import admin, user
+from utils.dependency import Dependency, inject
 
 
 @inject
@@ -27,7 +28,6 @@ def setup_payment_categories(db: Session = Dependency(get_db)):
         category = models.PaymentCategory(account_type=account_type, session_cost=cost)
         db.add(category)
     db.commit()
-
 
 
 models.Base.metadata.create_all(bind=engine)
@@ -57,13 +57,13 @@ def start_handler(message: telebot.types.Message, db: Session = Dependency(get_d
 @bot.callback_query_handler(func=lambda call: True)
 @inject
 def callback_center(call, db: Session = Dependency(get_db)):
-    if call.data.startswith("ACCOUNT_TYPE"):
+    if call.data.startswith("ACCOUNT_TYPE:"):
         USER_FLOW.acccount_register(call)
 
     elif call.data.startswith("SESSION_DATE_"):
         USER_FLOW.session_date(call, db)
     elif call.data == "SHOW_SESSIONS":
-        USER_FLOW.show_sessions(None,db,call)
+        USER_FLOW.show_sessions(None, db, call)
     elif call.data == "ADMIN_START":
         ADMIN_FLOW.start(call)
     elif call.data == "ADMIN_CHANGE_BASED_COST":
@@ -98,15 +98,37 @@ def callback_center(call, db: Session = Dependency(get_db)):
         USER_FLOW.report_all_payment(call, db)
 
 
-@bot.message_handler(func=lambda message: True)
-@inject
-def message_center(message, db: Session = Dependency(get_db)):
-    if message.text == CUSER.Buttons.SHOW_PROFILE:
-        USER_FLOW.show_profile(message, db)
-    if message.text == CUSER.Buttons.SHOW_SESSIONS:
-        USER_FLOW.show_sessions(message, db)
-    if message.text == CUSER.Buttons.SHOW_PAYMENT_HISTORY:
-        USER_FLOW.payment_history(message, db)
+# @bot.message_handler(func=lambda message: True)
+# @inject
+# def message_center(message, db: Session = Dependency(get_db)):
+#     if message.text == CUSER.Buttons.SHOW_PROFILE:
+#         USER_FLOW.show_profile(message, db)
+#     if message.text == CUSER.Buttons.SHOW_SESSIONS:
+#         USER_FLOW.show_sessions(message, db)
+#     if message.text == CUSER.Buttons.SHOW_PAYMENT_HISTORY:
+#         USER_FLOW.payment_history(message, db)
+
+
+@bot.message_handler(func=lambda message: has_bot_mention(message))
+def handle_mention(message):
+    bot.reply_to(message, "شما من را منشن کردید!")
+
+
+def has_bot_mention(message: types.Message) -> bool:
+    if not message.entities:
+        return False
+
+    for entity in message.entities:
+        if entity.type == "mention":
+            mention_text = message.text[entity.offset : entity.offset + entity.length]
+            if mention_text.lower() == f"@{bot.get_me().username.lower()}":
+                return True
+        elif entity.type == "bot_command":
+            # Optional: handle things like "/start@MyBot"
+            command_text = message.text[entity.offset : entity.offset + entity.length]
+            if f"@{bot.get_me().username.lower()}" in command_text.lower():
+                return True
+    return False
 
 
 # @bot.callback_query_handler(func=lambda call: call.data == "admin_generate_report")
